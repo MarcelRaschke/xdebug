@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2025 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -203,14 +203,14 @@ char* xdebug_error_type(int type)
 /*************************************************************************************************************************************/
 #define T(offset) (*(union _temp_variable *)((char*)zdata->current_execute_data->Ts + offset))
 
-zval *xdebug_get_zval_with_opline(zend_execute_data *zdata, const zend_op *opline, int node_type, const znode_op *node, int *is_var)
+zval *xdebug_get_zval_with_opline(zend_execute_data *zdata, const zend_op *opline, int node_type, const znode_op *node)
 {
 	return zend_get_zval_ptr(opline, node_type, node, zdata);
 }
 
-zval *xdebug_get_zval(zend_execute_data *zdata, int node_type, const znode_op *node, int *is_var)
+zval *xdebug_get_zval(zend_execute_data *zdata, int node_type, const znode_op *node)
 {
-	return xdebug_get_zval_with_opline(zdata, zdata->opline, node_type, node, is_var);
+	return xdebug_get_zval_with_opline(zdata, zdata->opline, node_type, node);
 }
 
 
@@ -303,16 +303,59 @@ char *replace_star_by_null(const char *name, int name_length)
 	return tmp;
 }
 
-static zval *get_arrayobject_storage(zval *parent, HashTable **properties)
+static inline zval *get_spl_storage(zval *parent, HashTable **properties, const char *prop_name, int prop_name_len)
 {
 	*properties = zend_get_properties_for(parent, ZEND_PROP_PURPOSE_DEBUG);
-	return zend_hash_str_find(*properties, "\0ArrayObject\0storage", sizeof("*ArrayObject*storage") - 1);
+	return zend_hash_str_find(*properties, prop_name, prop_name_len);
 }
 
-static zval *get_splobjectstorage_storage(zval *parent, HashTable **properties)
+static int handle_spl_classes(
+	const char *class_name, int class_name_len, const char *prop_name, int prop_name_len,
+	zval *value_in, char **element, HashTable **myht, zval *tmp_retval
+)
 {
-	*properties = zend_get_properties_for(parent, ZEND_PROP_PURPOSE_DEBUG);
-	return zend_hash_str_find(*properties, "\0SplObjectStorage\0storage", sizeof("*SplObjectStorage*storage") - 1);
+	zval *tmp;
+
+	/* ArrayObject, ArrayIterator, and SplObjectStorage uses a private 'storage' property */
+	if (strncmp(prop_name, "storage", prop_name_len) == 0) {
+		if (strncmp(class_name, "ArrayObject", class_name_len) == 0) {
+			tmp = get_spl_storage(value_in, myht, "\0ArrayObject\0storage", sizeof("*ArrayObject*storage") - 1);
+		} else if (strncmp(class_name, "ArrayIterator", class_name_len) == 0) {
+			tmp = get_spl_storage(value_in, myht, "\0ArrayIterator\0storage", sizeof("*ArrayIterator*storage") - 1);
+		} else if (strncmp(class_name, "SplObjectStorage", class_name_len) == 0) {
+			tmp = get_spl_storage(value_in, myht, "\0SplObjectStorage\0storage", sizeof("*SplObjectStorage*storage") - 1);
+		} else {
+			return 1;
+		}
+	} else
+	/* SplDoublyLinkedList uses a private 'dllist' property */
+	if (strncmp(prop_name, "dllist", prop_name_len) == 0) {
+		if (strncmp(class_name, "SplDoublyLinkedList", class_name_len) == 0) {
+			tmp = get_spl_storage(value_in, myht, "\0SplDoublyLinkedList\0dllist", sizeof("*SplDoublyLinkedList*dllist") - 1);
+		} else {
+			return 1;
+		}
+	} else
+	/* SplPriorityQueue uses a private 'heap' property */
+	if (strncmp(prop_name, "heap", prop_name_len) == 0) {
+		if (strncmp(class_name, "SplPriorityQueue", class_name_len) == 0) {
+			tmp = get_spl_storage(value_in, myht, "\0SplPriorityQueue\0heap", sizeof("*SplPriorityQueue*heap") - 1);
+		} else {
+			return 1;
+		}
+	} else {
+		return 1;
+	}
+
+	*element = NULL;
+	if (tmp != NULL) {
+		ZVAL_COPY(tmp_retval, tmp);
+		zend_release_properties(*myht);
+		return 0;
+	}
+	zend_release_properties(*myht);
+
+	return 1;
 }
 
 static void fetch_zval_from_symbol_table(
@@ -388,7 +431,7 @@ static void fetch_zval_from_symbol_table(
 				zend_op_array *opa = xdebug_lib_get_active_func_oparray();
 				zval **CV;
 
-				while (i < opa->last_var) {
+				while (opa->vars && i < opa->last_var) {
 					if (ZSTR_H(opa->vars[i]) == hash_value &&
 						ZSTR_LEN(opa->vars[i]) == element_length &&
 						strncmp(STR_NAME_VAL(opa->vars[i]), element, element_length) == 0)
@@ -458,6 +501,12 @@ static void fetch_zval_from_symbol_table(
 					/* As a normal (public) property */
 					zval *tmp = zend_symtable_str_find(myht, name, name_length);
 					if (tmp != NULL) {
+#if PHP_VERSION_ID >= 80400
+						if (Z_TYPE_P(tmp) == IS_PTR) {
+							zend_release_properties(myht);
+							goto skip_for_property_hook;
+						}
+#endif
 						ZVAL_COPY(&tmp_retval, tmp);
 						zend_release_properties(myht);
 						goto cleanup;
@@ -479,6 +528,10 @@ static void fetch_zval_from_symbol_table(
 					zend_release_properties(myht);
 				}
 			}
+
+#if PHP_VERSION_ID >= 80400
+skip_for_property_hook:
+#endif
 			/* First we try an object handler */
 			if (cce) {
 				zval *tmp_val;
@@ -528,27 +581,8 @@ static void fetch_zval_from_symbol_table(
 			}
 			element_length = name_length;
 
-			if (strncmp(ccn, "ArrayObject", ccnl) == 0 && strncmp(name, "storage", name_length) == 0) {
-				zval *tmp = get_arrayobject_storage(value_in, &myht);
-				element = NULL;
-				if (tmp != NULL) {
-					ZVAL_COPY(&tmp_retval, tmp);
-					zend_release_properties(myht);
-					goto cleanup;
-				}
-				zend_release_properties(myht);
-			}
-
-			/* All right, time for a mega hack. It's SplObjectStorage access time! */
-			if (strncmp(ccn, "SplObjectStorage", ccnl) == 0 && strncmp(name, "storage", name_length) == 0) {
-				zval *tmp = get_splobjectstorage_storage(value_in, &myht);
-				element = NULL;
-				if (tmp != NULL) {
-					ZVAL_COPY(&tmp_retval, tmp);
-					zend_release_properties(myht);
-					goto cleanup;
-				}
-				zend_release_properties(myht);
+			if (!handle_spl_classes(ccn, ccnl, name, name_length, value_in, &element, &myht, &tmp_retval)) {
+				goto cleanup;
 			}
 
 			break;
@@ -828,6 +862,27 @@ void xdebug_get_php_symbol(zval *retval, xdebug_str* name)
 	}
 }
 
+/* Copied from Zend/zend_objects_API.h and instead of a ZEND_ASSERT it returns NULL */
+static zend_property_info *xdebug_get_property_info_for_slot(zend_object *obj, zval *val)
+{
+	zend_property_info **table = obj->ce->properties_info_table;
+	intptr_t prop_num = val - obj->properties_table;
+
+	if (prop_num < 0 || prop_num >= obj->ce->default_properties_count) {
+		return NULL;
+	}
+
+	return table[prop_num];
+}
+
+static zend_property_info *xdebug_get_typed_property_info_for_slot(zend_object *obj, zval *val)
+{
+	zend_property_info *prop_info = xdebug_get_property_info_for_slot(obj, val);
+	if (prop_info && ZEND_TYPE_IS_SET(prop_info->type)) {
+		return prop_info;
+	}
+	return NULL;
+}
 
 xdebug_str* xdebug_get_property_type(zval* object, zval *val)
 {
@@ -839,7 +894,7 @@ xdebug_str* xdebug_get_property_type(zval* object, zval *val)
 	}
 	val = Z_INDIRECT_P(val);
 
-	info = zend_get_typed_property_info_for_slot(Z_OBJ_P(object), val);
+	info = xdebug_get_typed_property_info_for_slot(Z_OBJ_P(object), val);
 
 	if (info) {
 		zend_string *type_info = zend_type_to_string(info->type);
@@ -1051,16 +1106,16 @@ static char* xdebug_create_doc_link(xdebug_func f)
 
 	switch (f.type) {
 		case XFUNC_NORMAL: {
-			tmp_target = xdebug_sprintf("function.%s", f.function);
+			tmp_target = xdebug_sprintf("function.%s", ZSTR_VAL(f.function));
 			break;
 		}
 
 		case XFUNC_STATIC_MEMBER:
 		case XFUNC_MEMBER: {
-			if (strcmp(f.function, "__construct") == 0) {
+			if (zend_string_equals_literal(f.function, "__construct")) {
 				tmp_target = xdebug_sprintf("%s.construct", ZSTR_VAL(f.object_class));
 			} else {
-				tmp_target = xdebug_sprintf("%s.%s", ZSTR_VAL(f.object_class), f.function);
+				tmp_target = xdebug_sprintf("%s.%s", ZSTR_VAL(f.object_class), ZSTR_VAL(f.function));
 			}
 			break;
 		}
@@ -1072,7 +1127,7 @@ static char* xdebug_create_doc_link(xdebug_func f)
 
 	retval = xdebug_sprintf("<a href='%s%s%s' target='_new'>%s</a>",
 		(PG(docref_root) && PG(docref_root)[0]) ? PG(docref_root) : "http://www.php.net/",
-		tmp_target, PG(docref_ext), f.function);
+		tmp_target, PG(docref_ext), ZSTR_VAL(f.function));
 
 	xdfree(tmp_target);
 
@@ -1086,7 +1141,7 @@ char* xdebug_show_fname(xdebug_func f, int flags)
 			if (PG(html_errors) && (flags & XDEBUG_SHOW_FNAME_ALLOW_HTML) && f.internal) {
 				return xdebug_create_doc_link(f);
 			} else {
-				return xdstrdup(f.function);
+				return xdebug_sprintf("%s", ZSTR_VAL(f.function));
 			}
 			break;
 		}
@@ -1100,14 +1155,14 @@ char* xdebug_show_fname(xdebug_func f, int flags)
 					return xdebug_sprintf("%s%s%s",
 						ZSTR_VAL(f.scope_class),
 						f.type == XFUNC_STATIC_MEMBER ? "::" : "->",
-						f.function ? f.function : "?"
+						f.function ? ZSTR_VAL(f.function) : "?"
 					);
 				}
 
 				return xdebug_sprintf("%s%s%s",
 					f.object_class ? ZSTR_VAL(f.object_class) : "?",
 					f.type == XFUNC_STATIC_MEMBER ? "::" : "->",
-					f.function ? f.function : "?"
+					f.function ? ZSTR_VAL(f.function) : "?"
 				);
 			}
 			break;
@@ -1118,19 +1173,19 @@ char* xdebug_show_fname(xdebug_func f, int flags)
 			break;
 
 		case XFUNC_INCLUDE:
-			return xdstrdup("include");
+			return (flags & XDEBUG_SHOW_FNAME_ADD_FILE_NAME) ? xdebug_sprintf("{include:%s}", ZSTR_VAL(f.include_filename)) : xdstrdup("include");
 			break;
 
 		case XFUNC_INCLUDE_ONCE:
-			return xdstrdup("include_once");
+			return (flags & XDEBUG_SHOW_FNAME_ADD_FILE_NAME) ? xdebug_sprintf("{include_once:%s}", ZSTR_VAL(f.include_filename)) : xdstrdup("include_once");
 			break;
 
 		case XFUNC_REQUIRE:
-			return xdstrdup("require");
+			return (flags & XDEBUG_SHOW_FNAME_ADD_FILE_NAME) ? xdebug_sprintf("{require:%s}", ZSTR_VAL(f.include_filename)) : xdstrdup("require");
 			break;
 
 		case XFUNC_REQUIRE_ONCE:
-			return xdstrdup("require_once");
+			return (flags & XDEBUG_SHOW_FNAME_ADD_FILE_NAME) ? xdebug_sprintf("{require_once:%s}", ZSTR_VAL(f.include_filename)) : xdstrdup("require_once");
 			break;
 
 		case XFUNC_MAIN:
@@ -1143,7 +1198,7 @@ char* xdebug_show_fname(xdebug_func f, int flags)
 
 #if PHP_VERSION_ID >= 80100
 		case XFUNC_FIBER:
-			return xdstrdup(f.function);
+			return xdebug_sprintf("%s", ZSTR_VAL(f.function));
 			break;
 #endif
 

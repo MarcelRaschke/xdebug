@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -130,14 +130,14 @@ static void add_arguments(xdebug_str *line_entry, function_stack_entry *fse)
 	}
 }
 
-void xdebug_trace_computerized_function_entry(void *ctxt, function_stack_entry *fse, int function_nr)
+void xdebug_trace_computerized_function_entry(void *ctxt, function_stack_entry *fse)
 {
 	xdebug_trace_computerized_context *context = (xdebug_trace_computerized_context*) ctxt;
 	char *tmp_name;
 	xdebug_str str = XDEBUG_STR_INITIALIZER;
 
 	xdebug_str_add_fmt(&str, "%d\t", fse->level);
-	xdebug_str_add_fmt(&str, "%d\t", function_nr);
+	xdebug_str_add_fmt(&str, "%d\t", fse->function_nr);
 
 	tmp_name = xdebug_show_fname(fse->function, XDEBUG_SHOW_FNAME_DEFAULT);
 
@@ -152,25 +152,27 @@ void xdebug_trace_computerized_function_entry(void *ctxt, function_stack_entry *
 	}
 	xdfree(tmp_name);
 
-	if (fse->include_filename) {
+	if (fse->function.include_filename) {
 		if (fse->function.type == XFUNC_EVAL) {
 			zend_string *escaped;
 
-			escaped = php_addcslashes(fse->include_filename, (char*) "'\\\0..\37", 6);
+			escaped = php_addcslashes(fse->function.include_filename, (char*) "'\\\0..\37", 6);
 
 			xdebug_str_addc(&str, '\'');
 			xdebug_str_add_zstr(&str, escaped);
 			xdebug_str_addc(&str, '\'');
 			zend_string_release(escaped);
 		} else {
-			xdebug_str_add_zstr(&str, fse->include_filename);
+			xdebug_str_add_zstr(&str, fse->function.include_filename);
 		}
 	}
 
 	/* Filename and Lineno (9, 10) */
 	xdebug_str_add_fmt(&str, "\t%s\t%d", ZSTR_VAL(fse->filename), fse->lineno);
 
-	add_arguments(&str, fse);
+	if (XINI_TRACE(collect_params)) {
+		add_arguments(&str, fse);
+	}
 
 	/* Trailing \n */
 	xdebug_str_addc(&str, '\n');
@@ -180,13 +182,13 @@ void xdebug_trace_computerized_function_entry(void *ctxt, function_stack_entry *
 	xdfree(str.d);
 }
 
-void xdebug_trace_computerized_function_exit(void *ctxt, function_stack_entry *fse, int function_nr)
+void xdebug_trace_computerized_function_exit(void *ctxt, function_stack_entry *fse)
 {
 	xdebug_trace_computerized_context *context = (xdebug_trace_computerized_context*) ctxt;
 	xdebug_str str = XDEBUG_STR_INITIALIZER;
 
 	xdebug_str_add_fmt(&str, "%d\t", fse->level);
-	xdebug_str_add_fmt(&str, "%d\t", function_nr);
+	xdebug_str_add_fmt(&str, "%d\t", fse->function_nr);
 
 	xdebug_str_add_literal(&str, "1\t");
 	xdebug_str_add_fmt(&str, "%F\t", XDEBUG_SECONDS_SINCE_START(xdebug_get_nanotime()));
@@ -197,13 +199,13 @@ void xdebug_trace_computerized_function_exit(void *ctxt, function_stack_entry *f
 	xdfree(str.d);
 }
 
-void xdebug_trace_computerized_function_return_value(void *ctxt, function_stack_entry *fse, int function_nr, zval *return_value)
+void xdebug_trace_computerized_function_return_value(void *ctxt, function_stack_entry *fse, zval *return_value)
 {
 	xdebug_trace_computerized_context *context = (xdebug_trace_computerized_context*) ctxt;
 	xdebug_str str = XDEBUG_STR_INITIALIZER;
 
 	xdebug_str_add_fmt(&str, "%d\t", fse->level);
-	xdebug_str_add_fmt(&str, "%d\t", function_nr);
+	xdebug_str_add_fmt(&str, "%d\t", fse->function_nr);
 	xdebug_str_add_literal(&str, "R\t\t\t");
 
 	add_single_value(&str, return_value);

@@ -13,14 +13,14 @@ m4_include([m4/pkg.m4])
 m4_include([m4/clocks.m4])
 
 if test "$PHP_XDEBUG" != "no"; then
-  AC_MSG_CHECKING([Check for supported PHP versions])
+  AC_MSG_CHECKING([for supported PHP version])
   PHP_XDEBUG_FOUND_VERSION=`${PHP_CONFIG} --version`
-  PHP_XDEBUG_FOUND_VERNUM=`echo "${PHP_XDEBUG_FOUND_VERSION}" | $AWK 'BEGIN { FS = "."; } { printf "%d", ([$]1 * 100 + [$]2) * 100 + [$]3;}'`
+  PHP_XDEBUG_FOUND_VERNUM=`${PHP_CONFIG} --vernum`
   if test "$PHP_XDEBUG_FOUND_VERNUM" -lt "80000"; then
-    AC_MSG_ERROR([not supported. Need a PHP version >= 8.0.0 and < 8.4.0 (found $PHP_XDEBUG_FOUND_VERSION)])
+    AC_MSG_ERROR([not supported. Need a PHP version >= 8.0.0 and < 8.6.0 (found $PHP_XDEBUG_FOUND_VERSION)])
   else
-    if test "$PHP_XDEBUG_FOUND_VERNUM" -ge "80400"; then
-      AC_MSG_ERROR([not supported. Need a PHP version >= 8.0.0 and < 8.4.0 (found $PHP_XDEBUG_FOUND_VERSION)])
+    if test "$PHP_XDEBUG_FOUND_VERNUM" -ge "80600"; then
+      AC_MSG_ERROR([not supported. Need a PHP version >= 8.0.0 and < 8.6.0 (found $PHP_XDEBUG_FOUND_VERSION)])
     else
       AC_MSG_RESULT([supported ($PHP_XDEBUG_FOUND_VERSION)])
     fi
@@ -36,6 +36,7 @@ if test "$PHP_XDEBUG" != "no"; then
   AC_CHECK_HEADERS([netinet/in.h poll.h sys/poll.h])
   case $host_os in
   linux*)
+    AC_DEFINE(HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT,1,[ do have control socket support? ])
     AC_CHECK_HEADERS([linux/rtnetlink.h], [], [
       case $host_os in
         linux-musl*)
@@ -55,7 +56,7 @@ if test "$PHP_XDEBUG" != "no"; then
       PHP_EVAL_LIBLINE($ZLIB_LIBS, XDEBUG_SHARED_LIBADD)
       PHP_EVAL_INCLINE($ZLIB_CFLAGS)
 
-      AC_DEFINE(HAVE_XDEBUG_ZLIB,1,[ ])
+      AC_DEFINE(HAVE_XDEBUG_ZLIB,1,[ do we have zlib support compiled in? ])
     ],[ ])
   fi
 
@@ -106,15 +107,15 @@ if test "$PHP_XDEBUG" != "no"; then
 
   PHP_XDEBUG_CFLAGS="$STD_CFLAGS $MAINTAINER_CFLAGS"
 
-  XDEBUG_BASE_SOURCES="src/base/base.c src/base/filter.c"
-  XDEBUG_LIB_SOURCES="src/lib/usefulstuff.c src/lib/compat.c src/lib/crc32.c src/lib/file.c src/lib/hash.c src/lib/headers.c src/lib/lib.c src/lib/llist.c src/lib/log.c src/lib/set.c src/lib/str.c src/lib/timing.c src/lib/var.c src/lib/var_export_html.c src/lib/var_export_line.c src/lib/var_export_text.c src/lib/var_export_xml.c src/lib/xml.c"
+  XDEBUG_BASE_SOURCES="src/base/base.c src/base/ctrl_socket.c src/base/filter.c"
+  XDEBUG_LIB_SOURCES="src/lib/usefulstuff.c src/lib/cmd_parser.c src/lib/compat.c src/lib/crc32.c src/lib/file.c src/lib/hash.c src/lib/headers.c src/lib/lib.c src/lib/llist.c src/lib/log.c src/lib/set.c src/lib/str.c src/lib/timing.c src/lib/var.c src/lib/var_export_html.c src/lib/var_export_line.c src/lib/var_export_text.c src/lib/var_export_xml.c src/lib/xml.c"
 
   XDEBUG_COVERAGE_SOURCES="src/coverage/branch_info.c src/coverage/code_coverage.c"
   XDEBUG_DEBUGGER_SOURCES="src/debugger/com.c src/debugger/debugger.c src/debugger/handler_dbgp.c src/debugger/handlers.c src/debugger/ip_info.c"
   XDEBUG_DEVELOP_SOURCES="src/develop/develop.c src/develop/monitor.c src/develop/php_functions.c src/develop/stack.c src/develop/superglobals.c"
   XDEBUG_GCSTATS_SOURCES="src/gcstats/gc_stats.c"
   XDEBUG_PROFILER_SOURCES="src/profiler/profiler.c"
-  XDEBUG_TRACING_SOURCES="src/tracing/trace_computerized.c src/tracing/trace_html.c src/tracing/trace_textual.c src/tracing/tracing.c"
+  XDEBUG_TRACING_SOURCES="src/tracing/trace_computerized.c src/tracing/trace_flamegraph.c src/tracing/trace_html.c src/tracing/trace_textual.c src/tracing/tracing.c"
 
   PHP_NEW_EXTENSION(xdebug, xdebug.c $XDEBUG_BASE_SOURCES $XDEBUG_LIB_SOURCES $XDEBUG_COVERAGE_SOURCES $XDEBUG_DEBUGGER_SOURCES $XDEBUG_DEVELOP_SOURCES $XDEBUG_GCSTATS_SOURCES $XDEBUG_PROFILER_SOURCES $XDEBUG_TRACING_SOURCES, $ext_shared,,$PHP_XDEBUG_CFLAGS,,yes)
   PHP_ADD_BUILD_DIR(PHP_EXT_BUILDDIR(xdebug)[/src/base])

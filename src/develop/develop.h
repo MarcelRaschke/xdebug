@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2020 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,6 +16,8 @@
 
 #ifndef __XDEBUG_DEVELOP_H__
 #define __XDEBUG_DEVELOP_H__
+
+#define XDEBUG_LAST_EXCEPTION_TRACE_SLOTS 8
 
 typedef struct _xdebug_develop_globals_t {
 	/* used for function monitoring */
@@ -39,8 +41,12 @@ typedef struct _xdebug_develop_globals_t {
 	/* scream */
 	zend_bool  in_at;
 
-	/* overloaded var_dump */
-	zif_handler   orig_var_dump_func;
+	/* last exception stack trace */
+	struct {
+		int          next_slot;
+		zend_object *obj_ptr[XDEBUG_LAST_EXCEPTION_TRACE_SLOTS];
+		zval         stack_trace[XDEBUG_LAST_EXCEPTION_TRACE_SLOTS];
+	} last_exception_trace;
 } xdebug_develop_globals_t;
 
 typedef struct _xdebug_develop_settings_t {
@@ -67,10 +73,11 @@ typedef struct _xdebug_develop_settings_t {
 void xdebug_init_develop_globals(xdebug_develop_globals_t *xg);
 void xdebug_deinit_develop_globals(xdebug_develop_globals_t *xg);
 
-void xdebug_develop_minit();
+void xdebug_develop_minit(INIT_FUNC_ARGS);
 void xdebug_develop_mshutdown();
 void xdebug_develop_rinit();
 void xdebug_develop_post_deactivate();
+void xdebug_develop_rshutdown();
 
 void xdebug_develop_throw_exception_hook(zend_object *exception, zval *file, zval *line, zval *code, char *code_str, zval *message);
 void xdebug_monitor_handler(function_stack_entry *fse);

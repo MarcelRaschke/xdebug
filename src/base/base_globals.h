@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2024 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -48,11 +48,8 @@ typedef struct _xdebug_base_globals_t {
 #endif
 	xdebug_nanotime_context nanotime_context;
 	uint64_t      start_nanotime;
+	unsigned int  working_tsc_clock; /* -1 = unknown, 0 = not available, 1 = available */
 	unsigned int  prev_memory;
-	zif_handler   orig_set_time_limit_func;
-	zif_handler   orig_error_reporting_func;
-	zif_handler   orig_pcntl_exec_func;
-	zif_handler   orig_pcntl_fork_func;
 	int           output_is_tty;
 	zend_bool     in_debug_info;
 	zend_long     error_reporting_override;
@@ -68,6 +65,13 @@ typedef struct _xdebug_base_globals_t {
 	/* Systemd Private Temp */
 	char         *private_tmp;
 
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+	/* Control Socket */
+	char      *control_socket_path;
+	int        control_socket_fd;
+	zend_long  control_socket_last_trigger;
+#endif
+
 	/* filters */
 	zend_long     filter_type_code_coverage;
 	zend_long     filter_type_stack;
@@ -82,6 +86,10 @@ typedef struct _xdebug_base_globals_t {
 } xdebug_base_globals_t;
 
 typedef struct _xdebug_base_settings_t {
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+	int           control_socket_granularity;
+	zend_long     control_socket_threshold_ms;
+#endif
 	zend_long     max_nesting_level;
 } xdebug_base_settings_t;
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2024 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -14,6 +14,8 @@
    +----------------------------------------------------------------------+
  */
 
+#include <errno.h>
+
 #include "php_xdebug.h"
 #include "ext/standard/info.h"
 
@@ -22,6 +24,8 @@
 #include "lib_private.h"
 #include "log.h"
 #include "var.h"
+
+#define DOCS_LINK_ICON "⊕"
 
 char* xdebug_lib_docs_base(void)
 {
@@ -113,7 +117,7 @@ static inline void xdebug_diagnostic_log(int channel, int log_level, const char 
 			xdebug_str_addc(XG_LIB(diagnosis_buffer), '-');
 			xdebug_str_add(XG_LIB(diagnosis_buffer), error_code, 0);
 		}
-		xdebug_str_add_const(XG_LIB(diagnosis_buffer), "\">🖹</a></td></tr>");
+		xdebug_str_add_const(XG_LIB(diagnosis_buffer), "\">" DOCS_LINK_ICON "</a></td></tr>");
 	}
 
 	xdebug_str_addc(XG_LIB(diagnosis_buffer), '\n');
@@ -262,7 +266,7 @@ static void print_feature_row(const char *name, int flag, const char *doc_name)
 		PUTS("</td><td class=\"d\"><a href=\"");
 		PUTS(xdebug_lib_docs_base());
 		PUTS(doc_name);
-		PUTS("\">🖹</a></td></tr>\n");
+		PUTS("\">" DOCS_LINK_ICON "</a></td></tr>\n");
 	} else {
 		php_info_print_table_row(2, name, XDEBUG_MODE_IS(flag) ? "✔ enabled" : "✘ disabled");
 	}
@@ -331,6 +335,7 @@ void xdebug_print_info(void)
 	php_info_print_table_row(2, "Clock Source", "clock_gettime_nsec_np");
 # elif HAVE_XDEBUG_CLOCK_GETTIME
 	php_info_print_table_row(2, "Clock Source", "clock_gettime");
+	php_info_print_table_row(2, "TSC Clock Source", XG_BASE(working_tsc_clock) ? "available" : "unavailable");
 # else
 	php_info_print_table_row(2, "Clock Source", "gettimeofday");
 # endif
@@ -526,7 +531,7 @@ static void xdebug_print_settings(void)
 			PUTS(xdebug_lib_docs_base());
 			PUTS("all_settings#");
 			PHPWRITE(ZSTR_VAL(ini_entry->name), ZSTR_LEN(ini_entry->name));
-			PUTS("\">🖹</a></td></tr>\n");
+			PUTS("\">" DOCS_LINK_ICON "</a></td></tr>\n");
 		} else {
 			PHPWRITE(ZSTR_VAL(ini_entry->name), ZSTR_LEN(ini_entry->name));
 			if (if_overridden_xdebug_mode(ZSTR_VAL(ini_entry->name))) {
@@ -635,12 +640,12 @@ static void print_profile_information(void)
 	if (!sapi_module.phpinfo_as_text) {
 		PUTS("<tr class=\"h\"><th colspan=\"2\">Profiler</th><th>Docs</th></tr>\n");
 		if (file_name) {
-			xdebug_info_printf("<tr><td class=\"e\">Profile File</td><td class=\"v\">%s%s</td><td class=\"d\"><a href=\"%sprofiler\">🖹</a></td></tr>\n",
+			xdebug_info_printf("<tr><td class=\"e\">Profile File</td><td class=\"v\">%s%s</td><td class=\"d\"><a href=\"%sprofiler\">" DOCS_LINK_ICON "</a></td></tr>\n",
 				private_tmp_directory(file_name),
 				file_name,
 				xdebug_lib_docs_base());
 		} else {
-			xdebug_info_printf("<tr><td colspan=\"2\" class=\"d\">Profiler is not active</td><td class=\"d\"><a href=\"%sprofiler\">🖹</a></td></tr>\n",
+			xdebug_info_printf("<tr><td colspan=\"2\" class=\"d\">Profiler is not active</td><td class=\"d\"><a href=\"%sprofiler\">" DOCS_LINK_ICON "</a></td></tr>\n",
 				xdebug_lib_docs_base());
 		}
 	} else {
@@ -672,7 +677,7 @@ static void print_step_debug_information(void)
 		PUTS("<tr class=\"h\"><th colspan=\"2\">Step Debugging</th><th>Docs</th></tr>\n");
 		xdebug_info_printf(
 			"<tr><td class=\"e\">Debugger</td><td class=\"v\">%s</td>"
-			"<td class=\"d\"><a href=\"%sstep_debug\">🖹</a></td></tr>\n",
+			"<td class=\"d\"><a href=\"%sstep_debug\">" DOCS_LINK_ICON "</a></td></tr>\n",
 				is_active ? "Active" : (XG_DBG(detached) ? "Detached" : "Not Active"), xdebug_lib_docs_base());
 		if (XG_DBG(context).connected_hostname) {
 			if (strcmp(XINI_DBG(cloud_id), "") == 0) {
@@ -788,12 +793,12 @@ static void print_trace_information(void)
 	if (!sapi_module.phpinfo_as_text) {
 		PUTS("<tr class=\"h\"><th colspan=\"2\">Function Tracing</th><th>Docs</th></tr>\n");
 		if (file_name) {
-			xdebug_info_printf("<tr><td class=\"e\">Trace File</td><td class=\"v\">%s%s</td><td class=\"d\"><a href=\"%strace\">🖹</a></td></tr>\n",
+			xdebug_info_printf("<tr><td class=\"e\">Trace File</td><td class=\"v\">%s%s</td><td class=\"d\"><a href=\"%strace\">" DOCS_LINK_ICON "</a></td></tr>\n",
 				private_tmp_directory(file_name),
 				file_name,
 				xdebug_lib_docs_base());
 		} else {
-			xdebug_info_printf("<tr><td colspan=\"2\" class=\"d\">Function tracing is not active</td><td class=\"d\"><a href=\"%strace\">🖹</a></td></tr>\n",
+			xdebug_info_printf("<tr><td colspan=\"2\" class=\"d\">Function tracing is not active</td><td class=\"d\"><a href=\"%strace\">" DOCS_LINK_ICON "</a></td></tr>\n",
 				xdebug_lib_docs_base());
 		}
 	} else {
@@ -857,7 +862,14 @@ static void info_extension_flags_set(INTERNAL_FUNCTION_PARAMETERS)
 	array_init_size(return_value, 1);
 
 #if HAVE_XDEBUG_ZLIB
-	add_next_index_stringl(return_value, "compression", 11);
+	add_next_index_stringl(return_value, "compression", strlen("compression"));
+#endif
+
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+	add_next_index_stringl(return_value, "control-socket", strlen("control-socket"));
+	if (XG_BASE(working_tsc_clock) == 1) {
+		add_next_index_stringl(return_value, "tsc", strlen("tsc"));
+	}
 #endif
 }
 

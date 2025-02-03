@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -14,6 +14,7 @@
    +----------------------------------------------------------------------+
  */
 
+#include <errno.h>
 #include <sys/types.h>
 
 #ifndef PHP_WIN32
@@ -95,12 +96,40 @@ const char *xdebug_dbgp_status_strings[7] =
 const char *xdebug_dbgp_reason_strings[4] =
 	{"ok", "error", "aborted", "exception"};
 
+#define XDEBUG_ERROR_OK                              0
+#define XDEBUG_ERROR_PARSE                           1
+#define XDEBUG_ERROR_DUP_ARG                         2
+#define XDEBUG_ERROR_INVALID_ARGS                    3
+#define XDEBUG_ERROR_UNIMPLEMENTED                   4
+#define XDEBUG_ERROR_COMMAND_UNAVAILABLE             5
+
+#define XDEBUG_ERROR_CANT_OPEN_FILE                100
+#define XDEBUG_ERROR_STREAM_REDIRECT_FAILED        101 /* unused */
+
+#define XDEBUG_ERROR_BREAKPOINT_NOT_SET            200
+#define XDEBUG_ERROR_BREAKPOINT_TYPE_NOT_SUPPORTED 201
+#define XDEBUG_ERROR_BREAKPOINT_INVALID            202
+#define XDEBUG_ERROR_BREAKPOINT_NO_CODE            203
+#define XDEBUG_ERROR_BREAKPOINT_INVALID_STATE      204
+#define XDEBUG_ERROR_NO_SUCH_BREAKPOINT            205
+#define XDEBUG_ERROR_EVALUATING_CODE               206
+#define XDEBUG_ERROR_INVALID_EXPRESSION            207 /* unused */
+
+#define XDEBUG_ERROR_PROPERTY_NON_EXISTENT         300
+#define XDEBUG_ERROR_PROPERTY_NON_EXISTANT         300 /* compatibility typo */
+#define XDEBUG_ERROR_STACK_DEPTH_INVALID           301
+#define XDEBUG_ERROR_CONTEXT_INVALID               302 /* unused */
+
+#define XDEBUG_ERROR_PROFILING_NOT_STARTED         800
+
+#define XDEBUG_ERROR_ENCODING_NOT_SUPPORTED        900
+
 typedef struct {
 	int         code;
 	const char *message;
 } xdebug_error_entry;
 
-xdebug_error_entry xdebug_error_codes[24] = {
+static xdebug_error_entry xdebug_error_codes[24] = {
 	{   0, "no error" },
 	{   1, "parse error in command" },
 	{   2, "duplicate arguments in command" },
@@ -126,6 +155,19 @@ xdebug_error_entry xdebug_error_codes[24] = {
 	{ 999, "unknown error" },
 	{  -1, NULL }
 };
+
+static const char *error_message_from_code(int code)
+{
+	xdebug_error_entry *error_entry = &xdebug_error_codes[0];
+
+	while (error_entry->message) {
+		if (code == error_entry->code) {
+			return error_entry->message;
+		}
+		error_entry++;
+	}
+	return NULL;
+}
 
 #define XDEBUG_STR_SWITCH_DECL       char *__switch_variable
 #define XDEBUG_STR_SWITCH(s)         __switch_variable = (s);
@@ -474,31 +516,11 @@ static xdebug_str* return_source(zend_string *filename, int begin, int end)
 	}
 }
 
-
-static int check_evaled_code(zend_string *filename_in, char **filename_out)
-{
-	char *end_marker;
-	xdebug_eval_info *ei;
-
-	if (!filename_in) {
-		return 0;
-	}
-
-	end_marker = ZSTR_VAL(filename_in) + ZSTR_LEN(filename_in) - strlen("eval()'d code");
-	if (end_marker >= ZSTR_VAL(filename_in) && strcmp("eval()'d code", end_marker) == 0) {
-		if (xdebug_hash_find(XG_DBG(context).eval_id_lookup, ZSTR_VAL(filename_in), ZSTR_LEN(filename_in), (void *) &ei)) {
-			*filename_out = xdebug_sprintf("dbgp://%lu", ei->id);
-			return 1;
-		}
-	}
-	return 0;
-}
-
 static xdebug_xml_node* return_stackframe(int nr)
 {
 	function_stack_entry *fse, *fse_prev;
 	char                 *tmp_fname;
-	char                 *tmp_filename;
+	zend_string          *tmp_filename;
 	xdebug_xml_node      *tmp;
 
 	fse = xdebug_get_stack_frame(nr);
@@ -510,10 +532,10 @@ static xdebug_xml_node* return_stackframe(int nr)
 	xdebug_xml_add_attribute_ex(tmp, "where", xdstrdup(tmp_fname), 0, 1);
 	xdebug_xml_add_attribute_ex(tmp, "level", xdebug_sprintf("%ld", nr), 0, 1);
 	if (fse_prev) {
-		if (check_evaled_code(fse_prev->filename, &tmp_filename)) {
+		if (xdebug_debugger_check_evaled_code(fse_prev->filename, &tmp_filename)) {
 			xdebug_xml_add_attribute_ex(tmp, "type",     xdstrdup("eval"), 0, 1);
-			xdebug_xml_add_attribute_ex(tmp, "filename", tmp_filename, 0, 0);
-			xdfree(tmp_filename);
+			xdebug_xml_add_attribute_ex(tmp, "filename", ZSTR_VAL(tmp_filename), 0, 0);
+			zend_string_release(tmp_filename);
 		} else {
 			xdebug_xml_add_attribute_ex(tmp, "type",     xdstrdup("file"), 0, 1);
 			xdebug_xml_add_attribute_ex(tmp, "filename", xdebug_path_to_url(fse_prev->filename), 0, 1);
@@ -522,12 +544,12 @@ static xdebug_xml_node* return_stackframe(int nr)
 	} else {
 		zend_string *executed_filename = zend_get_executed_filename_ex();
 		int          executed_lineno   = zend_get_executed_lineno();
-		char        *tmp_filename;
+		zend_string *tmp_filename;
 
-		if (check_evaled_code(executed_filename, &tmp_filename)) {
+		if (xdebug_debugger_check_evaled_code(executed_filename, &tmp_filename)) {
 			xdebug_xml_add_attribute_ex(tmp, "type", xdstrdup("eval"), 0, 1);
-			xdebug_xml_add_attribute_ex(tmp, "filename", tmp_filename, 0, 0);
-			xdfree(tmp_filename);
+			xdebug_xml_add_attribute_ex(tmp, "filename", ZSTR_VAL(tmp_filename), 0, 0);
+			zend_string_release(tmp_filename);
 		} else if (executed_filename) {
 			xdebug_xml_add_attribute_ex(tmp, "type", xdstrdup("file"), 0, 1);
 			xdebug_xml_add_attribute_ex(tmp, "filename", xdebug_path_to_url(executed_filename), 0, 1);
@@ -950,6 +972,7 @@ DBGP_FUNC(breakpoint_set)
 	if ((strcmp(CMD_OPTION_CHAR('t'), "line") == 0) || (strcmp(CMD_OPTION_CHAR('t'), "conditional") == 0)) {
 		size_t  new_length = 0;
 		char   *tmp_name;
+		function_stack_entry *fse = XDEBUG_VECTOR_TAIL(XG_BASE(stack));
 
 		if (!CMD_OPTION_SET('n')) {
 			RETURN_RESULT(XG_DBG(status), XG_DBG(reason), XDEBUG_ERROR_INVALID_ARGS);
@@ -959,8 +982,6 @@ DBGP_FUNC(breakpoint_set)
 
 		/* If no filename is given, we use the current one */
 		if (!CMD_OPTION_SET('f')) {
-			function_stack_entry *fse = XDEBUG_VECTOR_TAIL(XG_BASE(stack));
-
 			if (!fse) {
 				RETURN_RESULT(XG_DBG(status), XG_DBG(reason), XDEBUG_ERROR_STACK_DEPTH_INVALID);
 			} else {
@@ -1013,6 +1034,16 @@ DBGP_FUNC(breakpoint_set)
 
 			if (xdebug_hash_find(XG_DBG(breakable_lines_map), ZSTR_VAL(brk_info->filename), ZSTR_LEN(brk_info->filename), (void *) &lines_list)) {
 				line_breakpoint_resolve_helper(context, lines_list, brk_info);
+			}
+		}
+
+		if (fse) {
+			function_stack_entry *loop_fse = fse;
+			int i;
+			size_t stack_size = XDEBUG_VECTOR_COUNT(XG_BASE(stack));
+
+			for (i = 0; i < stack_size; i++, loop_fse--) {
+				xdebug_debugger_set_has_line_breakpoints(loop_fse);
 			}
 		}
 	} else
@@ -1098,6 +1129,7 @@ DBGP_FUNC(eval)
 	size_t           new_length = 0;
 	int              res;
 	xdebug_var_export_options *options;
+	zend_string     *return_message;
 
 	if (!CMD_OPTION_SET('-')) {
 		RETURN_RESULT(XG_DBG(status), XG_DBG(reason), XDEBUG_ERROR_INVALID_ARGS);
@@ -1114,13 +1146,18 @@ DBGP_FUNC(eval)
 	/* base64 decode eval string */
 	eval_string = (char*) xdebug_base64_decode((unsigned char*) CMD_OPTION_CHAR('-'), CMD_OPTION_LEN('-'), &new_length);
 
-	res = xdebug_do_eval(eval_string, &ret_zval);
+	res = xdebug_do_eval(eval_string, &ret_zval, &return_message);
 
 	xdfree(eval_string);
 
 	/* Handle result */
 	if (!res) {
-		RETURN_RESULT(XG_DBG(status), XG_DBG(reason), XDEBUG_ERROR_EVALUATING_CODE);
+		if (return_message) {
+			RETURN_RESULT_WITH_MESSAGE(XG_DBG(status), XG_DBG(reason), XDEBUG_ERROR_EVALUATING_CODE, xdebug_sprintf("%s: %s", error_message_from_code(XDEBUG_ERROR_EVALUATING_CODE), ZSTR_VAL(return_message)));
+			zend_string_release(return_message);
+		} else {
+			RETURN_RESULT(XG_DBG(status), XG_DBG(reason), XDEBUG_ERROR_EVALUATING_CODE);
+		}
 	} else {
 		ret_xml = xdebug_get_zval_value_xml_node(NULL, &ret_zval, options);
 		xdebug_xml_add_child(*retval, ret_xml);
@@ -1218,8 +1255,10 @@ DBGP_FUNC(step_over)
 
 	if ((fse = XDEBUG_VECTOR_TAIL(XG_BASE(stack)))) {
 		XG_DBG(context).next_level = fse->level;
+		XG_DBG(context).next_stack = XG_BASE(stack);
 	} else {
 		XG_DBG(context).next_level = 0;
+		XG_DBG(context).next_stack = NULL;
 	}
 }
 
@@ -1560,13 +1599,7 @@ DBGP_FUNC(property_get)
 	/* Set the symbol table corresponding with the requested stack depth */
 	if (context_nr == 0) { /* locals */
 		if ((fse = xdebug_get_stack_frame(depth))) {
-			function_stack_entry *old_fse;
-
-			if (!fse->user_defined) {
-				RETURN_RESULT(XG_DBG(status), XG_DBG(reason), XDEBUG_ERROR_PROPERTY_NON_EXISTENT);
-			}
-
-			old_fse = xdebug_get_stack_frame(depth - 1);
+			function_stack_entry *old_fse = xdebug_get_stack_frame(depth - 1);
 
 			if (depth > 0) {
 				xdebug_lib_set_active_data(old_fse->execute_data);
@@ -1718,7 +1751,7 @@ DBGP_FUNC(property_set)
 
 	/* Do the eval */
 	eval_string = xdebug_sprintf("%s = %s %s", CMD_OPTION_CHAR('n'), cast_as, new_value);
-	res = xdebug_do_eval(eval_string, &ret_zval);
+	res = xdebug_do_eval(eval_string, &ret_zval, NULL);
 
 	/* restore executor state */
 	if (depth > 0) {
@@ -1896,21 +1929,17 @@ static int attach_context_vars(xdebug_xml_node *node, xdebug_var_export_options 
 	/* add user defined constants */
 	if (context_id == 2) {
 		zend_constant *val;
+		zend_string   *const_name;
 
-		ZEND_HASH_FOREACH_PTR(EG(zend_constants), val) {
+		ZEND_HASH_FOREACH_STR_KEY_PTR(EG(zend_constants), const_name, val) {
 			xdebug_str *tmp_name;
-
-			if (!val->name) {
-				/* skip special constants */
-				continue;
-			}
 
 			if (ZEND_CONSTANT_MODULE_NUMBER(val) != PHP_USER_CONSTANT) {
 				/* we're only interested in user defined constants */
 				continue;
 			}
 
-			tmp_name = xdebug_str_create(val->name->val, val->name->len);
+			tmp_name = xdebug_str_create(ZSTR_VAL(const_name), ZSTR_LEN(const_name));
 			add_constant_node(node, tmp_name, &(val->value), options);
 			xdebug_str_free(tmp_name);
 		} ZEND_HASH_FOREACH_END();
@@ -1935,6 +1964,7 @@ static int attach_context_vars(xdebug_xml_node *node, xdebug_var_export_options 
 	/* Here the context_id is 0 */
 	if ((fse = xdebug_get_stack_frame(depth))) {
 		function_stack_entry *old_fse = xdebug_get_stack_frame(depth - 1);
+		bool must_add_this = true;
 
 		if (depth > 0) {
 			xdebug_lib_set_active_data(old_fse->execute_data);
@@ -1944,6 +1974,8 @@ static int attach_context_vars(xdebug_xml_node *node, xdebug_var_export_options 
 		xdebug_lib_set_active_symbol_table(fse->symbol_table);
 
 		/* Only show vars when they are scanned */
+		xdebug_lib_register_compiled_variables(fse);
+
 		if (fse->declared_vars) {
 			xdebug_hash *tmp_hash;
 
@@ -1960,11 +1992,15 @@ static int attach_context_vars(xdebug_xml_node *node, xdebug_var_export_options 
 			xdebug_hash_apply_with_argument(tmp_hash, (void *) node, func, (void *) options);
 
 			/* Zend engine 2 does not give us $this, eval so we can get it */
-			if (!xdebug_hash_find(tmp_hash, "this", 4, (void *) &var_name)) {
-				add_variable_node(node, XDEBUG_STR_WRAP_CHAR("this"), 1, 1, 0, options);
+			if (xdebug_hash_find(tmp_hash, "this", 4, (void *) &var_name)) {
+				must_add_this = false;
 			}
 
 			xdebug_hash_destroy(tmp_hash);
+		}
+
+		if (must_add_this) {
+			add_variable_node(node, XDEBUG_STR_WRAP_CHAR("this"), 1, 1, 0, options);
 		}
 
 		/* Check for static variables and constants, but only if it's a static
@@ -2114,159 +2150,6 @@ DBGP_FUNC(xcmd_get_executable_lines)
 /*****************************************************************************
 ** Parsing functions
 */
-
-/* {{{ Constants for state machine */
-#define STATE_NORMAL                   0
-#define STATE_QUOTED                   1
-#define STATE_OPT_FOLLOWS              2
-#define STATE_SEP_FOLLOWS              3
-#define STATE_VALUE_FOLLOWS_FIRST_CHAR 4
-#define STATE_VALUE_FOLLOWS            5
-#define STATE_SKIP_CHAR                6
-#define STATE_ESCAPED_CHAR_FOLLOWS     7
-/* }}} */
-
-static void xdebug_dbgp_arg_dtor(xdebug_dbgp_arg *arg)
-{
-	int i;
-
-	for (i = 0; i < 27; i++) {
-		if (arg->value[i]) {
-			xdebug_str_free(arg->value[i]);
-		}
-	}
-	xdfree(arg);
-}
-
-static int xdebug_dbgp_parse_cmd(char *line, char **cmd, xdebug_dbgp_arg **ret_args)
-{
-	xdebug_dbgp_arg *args = NULL;
-	char *ptr;
-	int   state;
-	int   charescaped = 0;
-	char  opt = ' ', *value_begin = NULL;
-
-	args = xdmalloc(sizeof (xdebug_dbgp_arg));
-	memset(args->value, 0, sizeof(args->value));
-	*cmd = NULL;
-
-	/* Find the end of the command, this is always on the first space */
-	ptr = strchr(line, ' ');
-	if (!ptr) {
-		/* No space found. If the line is not empty, return the line
-		 * and assume it only consists of the command name. If the line
-		 * is 0 chars long, we return a failure. */
-		if (strlen(line)) {
-			*cmd = strdup(line);
-			*ret_args = args;
-			return XDEBUG_ERROR_OK;
-		} else {
-			goto parse_error;
-		}
-	} else {
-		/* A space was found, so we copy everything before it
-		 * into the cmd parameter. */
-		*cmd = xdcalloc(1, ptr - line + 1);
-		memcpy(*cmd, line, ptr - line);
-	}
-	/* Now we loop until we find the end of the string, which is the \0
-	 * character */
-	state = STATE_NORMAL;
-	do {
-		ptr++;
-		switch (state) {
-			case STATE_NORMAL:
-				if (*ptr != '-') {
-					goto parse_error;
-				} else {
-					state = STATE_OPT_FOLLOWS;
-				}
-				break;
-			case STATE_OPT_FOLLOWS:
-				opt = *ptr;
-				state = STATE_SEP_FOLLOWS;
-				break;
-			case STATE_SEP_FOLLOWS:
-				if (*ptr != ' ') {
-					goto parse_error;
-				} else {
-					state = STATE_VALUE_FOLLOWS_FIRST_CHAR;
-					value_begin = ptr + 1;
-				}
-				break;
-			case STATE_VALUE_FOLLOWS_FIRST_CHAR:
-				if (*ptr == '"' && opt != '-') {
-					value_begin = ptr + 1;
-					state = STATE_QUOTED;
-				} else {
-					state = STATE_VALUE_FOLLOWS;
-				}
-				break;
-			case STATE_VALUE_FOLLOWS:
-				if ((*ptr == ' ' && opt != '-') || *ptr == '\0') {
-					int opt_index = opt - 'a';
-
-					if (opt == '-') {
-						opt_index = 26;
-					}
-
-					if (!args->value[opt_index]) {
-						args->value[opt_index] = xdebug_str_create(value_begin, ptr - value_begin);
-						state = STATE_NORMAL;
-					} else {
-						goto duplicate_opts;
-					}
-				}
-				break;
-			case STATE_QUOTED:
-				if (*ptr == '\\') {
-					state = STATE_ESCAPED_CHAR_FOLLOWS;
-				} else
-				if (*ptr == '"') {
-					int opt_index = opt - 'a';
-
-					if (charescaped) {
-						charescaped = 0;
-						break;
-					}
-					if (opt == '-') {
-						opt_index = 26;
-					}
-
-					if (!args->value[opt_index]) {
-						int len = ptr - value_begin;
-
-						args->value[opt_index] = xdebug_str_create(value_begin, len);
-						xdebug_stripcslashes(args->value[opt_index]->d, &len);
-						args->value[opt_index]->l = len;
-
-						state = STATE_SKIP_CHAR;
-					} else {
-						goto duplicate_opts;
-					}
-				}
-				break;
-			case STATE_SKIP_CHAR:
-				state = STATE_NORMAL;
-				break;
-			case STATE_ESCAPED_CHAR_FOLLOWS:
-				state = STATE_QUOTED;
-				break;
-
-		}
-	} while (*ptr);
-	*ret_args = args;
-	return XDEBUG_ERROR_OK;
-
-parse_error:
-	*ret_args = args;
-	return XDEBUG_ERROR_PARSE;
-
-duplicate_opts:
-	*ret_args = args;
-	return XDEBUG_ERROR_DUP_ARG;
-}
-
 static int xdebug_dbgp_parse_option(xdebug_con *context, char* line, int flags, xdebug_xml_node *retval)
 {
 	char *cmd = NULL;
@@ -2276,7 +2159,7 @@ static int xdebug_dbgp_parse_option(xdebug_con *context, char* line, int flags, 
 	xdebug_xml_node *error;
 
 	xdebug_log(XLOG_CHAN_DEBUG, XLOG_COM, "<- %s", line);
-	res = xdebug_dbgp_parse_cmd(line, (char**) &cmd, (xdebug_dbgp_arg**) &args);
+	res = xdebug_cmd_parse(line, (char**) &cmd, (xdebug_dbgp_arg**) &args);
 
 	/* Add command name to return packet */
 	if (cmd) {
@@ -2341,7 +2224,7 @@ static int xdebug_dbgp_parse_option(xdebug_con *context, char* line, int flags, 
 	}
 
 	xdfree(cmd);
-	xdebug_dbgp_arg_dtor(args);
+	xdebug_cmd_arg_dtor(args);
 	return ret;
 }
 
@@ -2517,6 +2400,12 @@ int xdebug_dbgp_init(xdebug_con *context, int mode)
 		xdebug_xml_add_attribute_ex(response, "idekey", xdstrdup(XG_DBG(ide_key)), 0, 1);
 	}
 
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+	if (XG_BASE(control_socket_path)) {
+		xdebug_xml_add_attribute_ex(response, "xdebug:ctrl_socket", xdstrdup(XG_BASE(control_socket_path)), 0, 1);
+	}
+#endif
+
 	context->buffer = xdmalloc(sizeof(fd_buf));
 	context->buffer->buffer = NULL;
 	context->buffer->buffer_size = 0;
@@ -2675,11 +2564,10 @@ int xdebug_dbgp_error(xdebug_con *context, int type, char *exception_type, char 
 	return 1;
 }
 
-int xdebug_dbgp_break_on_line(xdebug_con *context, xdebug_brk_info *brk, zend_string *filename, int lineno)
+int xdebug_dbgp_break_on_line(xdebug_con *context, xdebug_brk_info *brk, zend_string *orig_filename, int lineno)
 {
-	char *tmp_file      = ZSTR_VAL(filename);
-	int   tmp_file_len  = ZSTR_LEN(filename);
-	int   free_tmp_file = 0;
+	zend_string *resolved_filename = orig_filename;
+	bool         free_eval_filename = false;
 
 	xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "Checking whether to break on %s:%d.", ZSTR_VAL(brk->filename), brk->resolved_lineno);
 
@@ -2688,48 +2576,39 @@ int xdebug_dbgp_break_on_line(xdebug_con *context, xdebug_brk_info *brk, zend_st
 		return 0;
 	}
 
-	xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "I: Current location: %s:%d.", tmp_file, lineno);
+	xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "I: Current location: %s:%d.", ZSTR_VAL(orig_filename), lineno);
 
-	if (is_dbgp_url(brk->filename) && check_evaled_code(filename, &tmp_file)) {
-		free_tmp_file = 1;
-		tmp_file_len = strlen(tmp_file);
-		xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "I: Found eval code for '%s': %s.", ZSTR_VAL(filename), tmp_file);
+	if (is_dbgp_url(brk->filename) && xdebug_debugger_check_evaled_code(orig_filename, &resolved_filename)) {
+		free_eval_filename = true;
+		xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "I: Found eval code for '%s': %s.", ZSTR_VAL(orig_filename), ZSTR_VAL(resolved_filename));
 	}
 
-	xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "I: Matching breakpoint '%s:%d' against location '%s:%d'.", ZSTR_VAL(brk->filename), brk->resolved_lineno, tmp_file, lineno);
-
-	if (ZSTR_LEN(brk->filename) != tmp_file_len) {
-		xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "R: File name length (%d) doesn't match with breakpoint (%zd).", tmp_file_len, ZSTR_LEN(brk->filename));
-
-		if (free_tmp_file) {
-			xdfree(tmp_file);
-		}
-		return 0;
-	}
+	xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "I: Matching breakpoint '%s:%d' against location '%s:%d'.", ZSTR_VAL(brk->filename), brk->resolved_lineno, ZSTR_VAL(resolved_filename), lineno);
 
 	if (brk->resolved_lineno != lineno) {
 		xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "R: Line number (%d) doesn't match with breakpoint (%d).", lineno, brk->resolved_lineno);
 
-		if (free_tmp_file) {
-			xdfree(tmp_file);
+		if (free_eval_filename) {
+			zend_string_release(resolved_filename);
 		}
 		return 0;
 	}
 
-	if (strncasecmp(ZSTR_VAL(brk->filename), tmp_file, ZSTR_LEN(brk->filename)) == 0) {
+	if (zend_string_equals(brk->filename, resolved_filename)) {
 		xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "F: File names match (%s).", ZSTR_VAL(brk->filename));
 
-		if (free_tmp_file) {
-			xdfree(tmp_file);
+		if (free_eval_filename) {
+			zend_string_release(resolved_filename);
 		}
 		return 1;
 	}
 
-	xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "R: File names (%s) doesn't match with breakpoint (%s).", tmp_file, ZSTR_VAL(brk->filename));
+	xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "R: File names (%s) doesn't match with breakpoint (%s).", ZSTR_VAL(resolved_filename), ZSTR_VAL(brk->filename));
 
-	if (free_tmp_file) {
-		xdfree(tmp_file);
+	if (free_eval_filename) {
+		zend_string_release(resolved_filename);
 	}
+
 	return 0;
 }
 
@@ -2754,11 +2633,11 @@ int xdebug_dbgp_breakpoint(xdebug_con *context, xdebug_vector *stack, zend_strin
 
 	error_container = xdebug_xml_node_init("xdebug:message");
 	if (filename) {
-		char *tmp_filename = NULL;
+		zend_string *tmp_filename = NULL;
 
-		if (check_evaled_code(filename, &tmp_filename)) {
-			xdebug_xml_add_attribute_ex(error_container, "filename", tmp_filename, 0, 0);
-			xdfree(tmp_filename);
+		if (xdebug_debugger_check_evaled_code(filename, &tmp_filename)) {
+			xdebug_xml_add_attribute_ex(error_container, "filename", ZSTR_VAL(tmp_filename), 0, 0);
+			zend_string_release(tmp_filename);
 		} else {
 			xdebug_xml_add_attribute_ex(error_container, "filename", xdebug_path_to_url(filename), 0, 1);
 		}
@@ -2888,9 +2767,8 @@ static void function_breakpoint_resolve_helper(void *rctxt, xdebug_brk_info *brk
 }
 */
 
-static void line_breakpoint_resolve_helper(xdebug_con *context, xdebug_lines_list *lines_list, xdebug_brk_info *brk_info)
+static xdebug_function_lines_map_item* find_smallest_range(xdebug_lines_list *lines_list, xdebug_brk_info *brk_info)
 {
-//	xdebug_func        func;
 	int                             i;
 	xdebug_function_lines_map_item *found_item = NULL;
 	int                             found_item_span = XDEBUG_RESOLVED_SPAN_MAX;
@@ -2910,6 +2788,16 @@ static void line_breakpoint_resolve_helper(xdebug_con *context, xdebug_lines_lis
 			found_item_span = item->line_span;
 		}
 	}
+
+	return found_item;
+}
+
+static void line_breakpoint_resolve_helper(xdebug_con *context, xdebug_lines_list *lines_list, xdebug_brk_info *brk_info)
+{
+	xdebug_function_lines_map_item *found_item = NULL;
+
+	/* Find smallest function span that fits the line nr in brk_info */
+	found_item = find_smallest_range(lines_list, brk_info);
 
 	if (!found_item) {
 		xdebug_log(XLOG_CHAN_DEBUG, XLOG_DEBUG, "R: Could not find any file/line entry in lines list.");
@@ -3048,11 +2936,11 @@ int xdebug_dbgp_notification(xdebug_con *context, zend_string *filename, long li
 
 	error_container = xdebug_xml_node_init("xdebug:message");
 	if (filename) {
-		char *tmp_filename = NULL;
+		zend_string *tmp_filename = NULL;
 
-		if (check_evaled_code(filename, &tmp_filename)) {
-			xdebug_xml_add_attribute_ex(error_container, "filename", tmp_filename, 0, 0);
-			xdfree(tmp_filename);
+		if (xdebug_debugger_check_evaled_code(filename, &tmp_filename)) {
+			xdebug_xml_add_attribute_ex(error_container, "filename", ZSTR_VAL(tmp_filename), 0, 0);
+			zend_string_release(tmp_filename);
 		} else {
 			xdebug_xml_add_attribute_ex(error_container, "filename", xdebug_path_to_url(filename), 0, 1);
 		}
@@ -3099,11 +2987,11 @@ int xdebug_dbgp_user_notify(xdebug_con *context, zend_string *filename, long lin
 
 	location_node = xdebug_xml_node_init("xdebug:location");
 	if (filename) {
-		char *tmp_filename = NULL;
+		zend_string *tmp_filename = NULL;
 
-		if (check_evaled_code(filename, &tmp_filename)) {
-			xdebug_xml_add_attribute_ex(location_node, "filename", tmp_filename, 0, 0);
-			xdfree(tmp_filename);
+		if (xdebug_debugger_check_evaled_code(filename, &tmp_filename)) {
+			xdebug_xml_add_attribute_ex(location_node, "filename", ZSTR_VAL(tmp_filename), 0, 0);
+			zend_string_release(tmp_filename);
 		} else {
 			xdebug_xml_add_attribute_ex(location_node, "filename", xdebug_path_to_url(filename), 0, 1);
 		}
@@ -3140,9 +3028,9 @@ int xdebug_dbgp_register_eval_id(xdebug_con *context, function_stack_entry *fse)
 
 	context->eval_id_sequence++;
 
-	ei = xdcalloc(sizeof(xdebug_eval_info), 1);
+	ei = xdcalloc(1, sizeof(xdebug_eval_info));
 	ei->id = context->eval_id_sequence;
-	ei->contents = zend_string_copy(fse->include_filename);
+	ei->contents = zend_string_copy(fse->function.include_filename);
 	ei->refcount = 2;
 
 	key = create_eval_key_file(fse->filename, fse->lineno);

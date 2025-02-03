@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -45,6 +45,8 @@
 # define PATH_MAX MAX_PATH
 # define poll WSAPoll
 #endif
+
+#include "Zend/zend_extensions.h"
 
 #include "com.h"
 
@@ -550,12 +552,38 @@ static int ide_key_is_cloud_id()
 	return 1;
 }
 
+static void warn_if_opcache_is_loaded_after_xdebug()
+{
+	bool xdebug_loaded = false;
+	zend_llist_element *ext_ptr = zend_extensions.head;
+
+	do
+	{
+		zend_extension *zext = (zend_extension *)ext_ptr->data;
+
+		if (strcmp(zext->name, "Xdebug") == 0) {
+			xdebug_loaded = true;
+		}
+
+		if (strcmp(zext->name, "Zend OPcache") == 0) {
+			if (xdebug_loaded) {
+				xdebug_log_ex(XLOG_CHAN_DEBUG, XLOG_WARN, "OPCACHE", "Debugger is not working optimally, as Xdebug is loaded before Zend OPcache");
+			}
+			return;
+		}
+
+		ext_ptr = ext_ptr->next;
+	} while (ext_ptr != NULL);
+}
+
 static void xdebug_init_debugger()
 {
 	xdebug_str *connection_attempts = xdebug_str_new();
 
 	/* Get handler from mode */
 	XG_DBG(context).handler = &xdebug_handler_dbgp;
+
+	warn_if_opcache_is_loaded_after_xdebug();
 
 	if (strcmp(XINI_DBG(cloud_id), "") != 0) {
 		xdebug_init_cloud_debugger(XINI_DBG(cloud_id));
@@ -606,12 +634,6 @@ void xdebug_restart_debugger()
 	xdebug_init_debugger();
 }
 
-/* Remote connection activation and house keeping */
-int xdebug_is_debug_connection_active()
-{
-	return XG_DBG(remote_connection_enabled);
-}
-
 void xdebug_mark_debug_connection_active()
 {
 	XG_DBG(remote_connection_enabled) = 1;
@@ -632,6 +654,40 @@ void xdebug_mark_debug_connection_not_active()
 
 	XG_DBG(remote_connection_enabled) = 0;
 	XG_DBG(remote_connection_pid) = 0;
+}
+
+bool xdebug_should_ignore(void)
+{
+	const char *ignore_value;
+	const char *found_in_global;
+
+	ignore_value = xdebug_lib_find_in_globals("XDEBUG_IGNORE", &found_in_global);
+
+	if (!ignore_value) {
+		return false;
+	}
+
+	if ((strcmp(ignore_value, "no") == 0) || (strcmp(ignore_value, "0") == 0)) {
+		xdebug_log_ex(XLOG_CHAN_DEBUG, XLOG_INFO, "IGN", "Not ignoring present 'XDEBUG_IGNORE' %s variable, because the value is '%s'.", found_in_global, ignore_value);
+		return false;
+	}
+
+	xdebug_log_ex(XLOG_CHAN_DEBUG, XLOG_DEBUG, "IGN", "Not activating because an 'XDEBUG_IGNORE' %s variable is present, with value '%s'.", found_in_global, ignore_value);
+	return true;
+}
+
+
+void xdebug_debug_init_if_requested_on_connect_to_client()
+{
+	RETURN_IF_MODE_IS_NOT(XDEBUG_MODE_STEP_DEBUG);
+
+	if (xdebug_should_ignore()) {
+		return;
+	}
+
+	if (!xdebug_is_debug_connection_active()) {
+		xdebug_init_debugger();
+	}
 }
 
 void xdebug_debug_init_if_requested_on_error()
@@ -746,6 +802,10 @@ void xdebug_debug_init_if_requested_at_startup(void)
 	}
 
 	if (xdebug_is_debug_connection_active()) {
+		return;
+	}
+
+	if (xdebug_should_ignore()) {
 		return;
 	}
 

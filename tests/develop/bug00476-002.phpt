@@ -1,99 +1,74 @@
 --TEST--
-Test for bug #476: Exception chanining doesn't work
+Test for bug #476: Exception chanining doesn't work (CLI colour)
 --INI--
 xdebug.mode=develop
 xdebug.dump.GET=
 xdebug.dump.SERVER=
 xdebug.show_local_vars=0
+html_errors=0
+xdebug.cli_color=2
+--SKIPIF--
+<?php
+require __DIR__ . '/../utils.inc';
+?>
 --FILE--
 <?php
-
-function a()
+function throwSecondException( Exception $e )
 {
+   throw new Exception('Second exception', 0, $e);
+}
+
+class thrower
+{
+	function __construct( private Exception $e )
+	{
+	}
+
+	function throwMe()
+	{
+		throw new Exception('Third exception', 42, $this->e );
+	}
+}
+
+try {
    throw new Exception('First exception');
-}
-
-function b()
-{
+} catch(Exception $e) {
 	try {
-		a();
-	} catch(Exception $e) {
-	   throw new Exception('Second exception', 0, $e);
+		throwSecondException( $e );
+	} catch(Exception $f) {
+		$t = new thrower($f);
+		$t->throwMe();
 	}
 }
-
-function c()
-{
-	try {
-		b();
-	} catch(Exception $e) {
-	   throw new Exception('Third exception', 0, $e);
-	}
-}
-
-function d()
-{
-	try {
-		c();
-	} catch(Exception $e) {
-	   throw new Exception('Fourth exception', 0, $e);
-	}
-}
-
-d();
-
 echo "DONE\n";
 ?>
 --EXPECTF--
-Fatal error: Uncaught%sFirst exception%sin %sbug00476-002.php%s%d
+[1m[31mFatal error[0m: Uncaught Exception: First exception in %sbug00476-002.php:20
 Stack trace:
-#0 %sbug00476-002.php(11): a()
-#1 %sbug00476-002.php(20): b()
-#2 %sbug00476-002.php(29): c()
-#3 %sbug00476-002.php(35): d()
-#4 {main}
+#0 {main}
 
-Next Exception: Second exception in %sbug00476-002.php:13
+Next Exception: Second exception in %sbug00476-002.php:4
 Stack trace:
-#0 %sbug00476-002.php(20): b()
-#1 %sbug00476-002.php(29): c()
-#2 %sbug00476-002.php(35): d()
-#3 {main}
+#0 %sbug00476-002.php(23): throwSecondException(Object(Exception))
+#1 {main}
 
-Next Exception: Third exception in %sbug00476-002.php:22
-Stack trace:
-#0 %sbug00476-002.php(29): c()
-#1 %sbug00476-002.php(35): d()
-#2 {main}
+Next Exception: Third exception[22m in [31m%sbug00476-002.php[0m on line [32m15[0m[22m
 
-Next Exception: Fourth exception in %sbug00476-002.php on line 31
+[1m[31mException[0m: Third exception[22m in [31m%sbug00476-002.php[0m on line [32m15[0m[22m
 
-Exception: First exception in %sbug00476-002.php on line 5
-
-Call Stack:
+[1mCall Stack:[22m
 %w%f %w%d   1. {main}() %sbug00476-002.php:0
-%w%f %w%d   2. d() %sbug00476-002.php:35
-%w%f %w%d   3. c() %sbug00476-002.php:29
-%w%f %w%d   4. b() %sbug00476-002.php:20
-%w%f %w%d   5. a() %sbug00476-002.php:11
+%w%f %w%d   2. thrower->throwMe() %sbug00476-002.php:26
 
-Exception: Second exception in %sbug00476-002.php on line 13
+	[1mNested Exceptions:[22m
 
-Call Stack:
-%w%f %w%d   1. {main}() %sbug00476-002.php:0
-%w%f %w%d   2. d() %sbug00476-002.php:35
-%w%f %w%d   3. c() %sbug00476-002.php:29
-%w%f %w%d   4. b() %sbug00476-002.php:20
+	[1m[31mException[0m: Second exception[22m in [31m%sbug00476-002.php[0m on line [32m4[0m[22m
 
-Exception: Third exception in %sbug00476-002.php on line 22
+	[1mCall Stack:[22m
+	%w%f %w%d   1. {main}() %sbug00476-002.php:0
+	%w%f %w%d   2. throwSecondException() %sbug00476-002.php:23
 
-Call Stack:
-%w%f %w%d   1. {main}() %sbug00476-002.php:0
-%w%f %w%d   2. d() %sbug00476-002.php:35
-%w%f %w%d   3. c() %sbug00476-002.php:29
+	[1m[31mException[0m: First exception[22m in [31m%sbug00476-002.php[0m on line [32m20[0m[22m
 
-Exception: Fourth exception in %sbug00476-002.php on line 31
-
-Call Stack:
-%w%f %w%d   1. {main}() %sbug00476-002.php:0
-%w%f %w%d   2. d() %sbug00476-002.php:35
+	[1mCall Stack:[22m
+	%w%f %w%d   1. {main}() %sbug00476-002.php:0

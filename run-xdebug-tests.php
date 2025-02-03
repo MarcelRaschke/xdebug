@@ -310,6 +310,7 @@ function main(): void
         'zend.exception_ignore_args=0',
         'zend.exception_string_param_max_len=15',
         'short_open_tag=0',
+        'pcre.jit=0',
     ];
 
     $no_file_cache = '-d opcache.file_cache= -d opcache.file_cache_only=0';
@@ -1999,6 +2000,9 @@ TEST $file
 
     if ($test->sectionNotEmpty('ENV')) {
         $env_str = str_replace('{PWD}', dirname($file), $test->getSection('ENV'));
+        $env_str = str_replace('{RUNID}', getenv('UNIQ_RUN_ID'), $env_str);
+        $env_str = str_replace('{TEST_PHP_WORKER}', getenv('TEST_PHP_WORKER'), $env_str);
+        $env_str = str_replace('{TMP}', sys_get_temp_dir(), $env_str);
         foreach (explode("\n", $env_str) as $e) {
             $e = explode('=', trim($e), 2);
 
@@ -2734,7 +2738,12 @@ COMMAND $cmd
         }
 
         // write .diff
-        $diff = generate_diff($wanted, $wanted_re, $output);
+        if (!empty($environment['TEST_PHP_DIFF_CMD'])) {
+            $diff = generate_diff_external($environment['TEST_PHP_DIFF_CMD'], $exp_filename, $output_filename);
+        } else {
+            $diff = generate_diff($wanted, $wanted_re, $output);
+        }
+
         if (is_array($IN_REDIRECT)) {
             $orig_shortname = str_replace(TEST_PHP_SRCDIR . '/', '', $file);
             $diff = "# original source file: $orig_shortname\n" . $diff;
@@ -2993,6 +3002,13 @@ function generate_array_diff(array $ar1, array $ar2, bool $is_reg, array $w): ar
     }
 
     return $diff;
+}
+
+function generate_diff_external(string $diff_cmd, string $exp_file, string $output_file): string
+{
+    $retval = shell_exec("{$diff_cmd} {$exp_file} {$output_file}");
+
+    return is_string($retval) ? $retval : 'Could not run external diff tool set through TEST_PHP_DIFF_CMD environment variable';
 }
 
 function generate_diff(string $wanted, ?string $wanted_re, string $output): string

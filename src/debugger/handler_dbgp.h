@@ -19,6 +19,7 @@
 
 #include <string.h>
 #include "handlers.h"
+#include "lib/cmd_parser.h"
 #include "lib/xml.h"
 
 #define DBGP_VERSION "1.0"
@@ -31,41 +32,36 @@ typedef struct xdebug_dbgp_result {
 
 #define ADD_REASON_MESSAGE(c) { \
 	xdebug_xml_node *message = xdebug_xml_node_init("message"); \
-	xdebug_error_entry *error_entry = &xdebug_error_codes[0]; \
-	\
-	while (error_entry->message) { \
-		if ((c) == error_entry->code) { \
-			xdebug_xml_add_text(message, xdstrdup(error_entry->message)); \
-			xdebug_xml_add_child(error, message); \
-		} \
-		error_entry++; \
-	} \
+	xdebug_xml_add_text(message, xdstrdup(error_message_from_code(c))); \
+	xdebug_xml_add_child(error, message); \
 }
 
 #define RETURN_RESULT(s, r, c) { \
 	xdebug_xml_node *error = xdebug_xml_node_init("error"); \
 	xdebug_xml_node *message = xdebug_xml_node_init("message"); \
-	xdebug_error_entry *error_entry = &xdebug_error_codes[0]; \
 	\
 	xdebug_xml_add_attribute(*retval, "status", xdebug_dbgp_status_strings[(s)]); \
 	xdebug_xml_add_attribute(*retval, "reason", xdebug_dbgp_reason_strings[(r)]); \
 	xdebug_xml_add_attribute_ex(error, "code", xdebug_sprintf("%u", (c)), 0, 1); \
+	xdebug_xml_add_text(message, xdstrdup(error_message_from_code(c))); \
+	xdebug_xml_add_child(error, message); \
 	\
-	while (error_entry->message) { \
-		if ((c) == error_entry->code) { \
-			xdebug_xml_add_text(message, xdstrdup(error_entry->message)); \
-			xdebug_xml_add_child(error, message); \
-		} \
-		error_entry++; \
-	} \
 	xdebug_xml_add_child(*retval, error); \
 	return; \
 }
 
-/* Argument structure */
-typedef struct xdebug_dbgp_arg {
-	xdebug_str *value[27]; /* one extra for - */
-} xdebug_dbgp_arg;
+#define RETURN_RESULT_WITH_MESSAGE(s, r, c, m) { \
+	xdebug_xml_node *error = xdebug_xml_node_init("error"); \
+	xdebug_xml_node *message = xdebug_xml_node_init("message"); \
+	\
+	xdebug_xml_add_attribute(*retval, "status", xdebug_dbgp_status_strings[(s)]); \
+	xdebug_xml_add_attribute(*retval, "reason", xdebug_dbgp_reason_strings[(r)]); \
+	xdebug_xml_add_attribute_ex(error, "code", xdebug_sprintf("%u", (c)), 0, 1); \
+	xdebug_xml_add_text(message, (m)); \
+	xdebug_xml_add_child(error, message); \
+	xdebug_xml_add_child(*retval, error); \
+	return; \
+}
 
 #define DBGP_FUNC_PARAMETERS        xdebug_xml_node **retval, xdebug_con *context, xdebug_dbgp_arg *args
 #define DBGP_FUNC_PASS_PARAMETERS   retval, context, args
@@ -89,11 +85,6 @@ typedef struct xdebug_dbgp_resolve_context {
 	zend_string          *filename;
 	xdebug_lines_list    *lines_list;
 } xdebug_dbgp_resolve_context;
-
-#define CMD_OPTION_SET(opt)        (!!(opt == '-' ? args->value[26] : args->value[(opt) - 'a']))
-#define CMD_OPTION_CHAR(opt)       (opt == '-' ? args->value[26]->d : args->value[(opt) - 'a']->d)
-#define CMD_OPTION_LEN(opt)        (opt == '-' ? args->value[26]->l : args->value[(opt) - 'a']->l)
-#define CMD_OPTION_XDEBUG_STR(opt) (opt == '-' ? args->value[26] : args->value[(opt) - 'a'])
 
 int xdebug_dbgp_init(xdebug_con *context, int mode);
 int xdebug_dbgp_deinit(xdebug_con *context);

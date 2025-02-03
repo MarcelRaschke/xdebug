@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -75,7 +75,7 @@ char *xdebug_trace_html_get_filename(void *ctxt)
 	return context->trace_file->name;
 }
 
-void xdebug_trace_html_function_entry(void *ctxt, function_stack_entry *fse, int function_nr)
+void xdebug_trace_html_function_entry(void *ctxt, function_stack_entry *fse)
 {
 	xdebug_trace_html_context *context = (xdebug_trace_html_context*) ctxt;
 	char *tmp_name;
@@ -83,7 +83,7 @@ void xdebug_trace_html_function_entry(void *ctxt, function_stack_entry *fse, int
 	xdebug_str str = XDEBUG_STR_INITIALIZER;
 
 	xdebug_str_add_literal(&str, "\t<tr>");
-	xdebug_str_add_fmt(&str, "<td>%d</td>", function_nr);
+	xdebug_str_add_fmt(&str, "<td>%d</td>", fse->function_nr);
 	xdebug_str_add_fmt(&str, "<td>%0.6F</td>", XDEBUG_SECONDS_SINCE_START(fse->nanotime));
 	xdebug_str_add_fmt(&str, "<td align='right'>%lu</td>", fse->memory);
 	xdebug_str_add_literal(&str, "<td align='left'>");
@@ -96,20 +96,20 @@ void xdebug_trace_html_function_entry(void *ctxt, function_stack_entry *fse, int
 	xdebug_str_add_fmt(&str, "<td>%s(", tmp_name);
 	xdfree(tmp_name);
 
-	if (fse->include_filename) {
+	if (fse->function.include_filename) {
 		if (fse->function.type == XFUNC_EVAL) {
 			xdebug_str       *joined;
 			xdebug_arg       *parts;
 
 			parts = xdebug_arg_ctor();
-			xdebug_explode("\n", ZSTR_VAL(fse->include_filename), parts, 99999);
+			xdebug_explode("\n", ZSTR_VAL(fse->function.include_filename), parts, 99999);
 			joined = xdebug_join("<br />", parts, 0, 99999);
 			xdebug_arg_dtor(parts);
 
 			xdebug_str_add_fmt(&str, "'%s'", joined->d);
 			xdebug_str_free(joined);
 		} else {
-			xdebug_str_add_zstr(&str, fse->include_filename);
+			xdebug_str_add_zstr(&str, fse->function.include_filename);
 		}
 	}
 

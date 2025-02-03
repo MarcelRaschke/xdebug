@@ -1,6 +1,6 @@
 <?php
 if ($argc <= 1) {
-	die("Usage: {$argv[0]} <version>");
+	die("Usage: {$argv[0]} <version> <<'from_master'>>");
 }
 
 $xdebugRepo    = '/home/derick/dev/php/xdebug-xdebug';
@@ -10,6 +10,12 @@ $url = "https://bugs.xdebug.org/api/rest/";
 $project_id = 1;
 
 $release_version = $argv[1];
+
+$from_master = false;
+if ( $argc == 3 ) {
+	$from_master = ( $argv[2] == 'from_master' );
+}
+
 $stability = 'stable';
 
 if ( preg_match( '/beta|alpha|RC|rc/', $release_version ) )
@@ -42,13 +48,16 @@ function getAllFixedIssuesForVersion( $version_id )
 {
 	global $url;
 
-	echo "Fetching issues\n";
+	echo "Fetching issues: ";
 	$page      = 1;
 	$page_size = 100;
 	$found     = [];
 
 	do {
-		$r = json_decode( file_get_contents( "{$url}/issues?page_size={$page_size}&page={$page}" ) );
+		$pageUrl = "{$url}/issues?page_size={$page_size}&page={$page}";
+		echo " {$page}";
+
+		$r = json_decode( file_get_contents( $pageUrl ) );
 
 		foreach ( $r->issues as $issue )
 		{
@@ -61,6 +70,8 @@ function getAllFixedIssuesForVersion( $version_id )
 	} while( count( $r->issues ) > 0 );
 
 	ksort( $found );
+
+	echo "\n\n";
 	return $found;
 }
 
@@ -90,7 +101,7 @@ $xml = <<<ENDXML
   <release>{$stability}</release>
   <api>{$stability}</api>
  </stability>
- <license uri="http://www.opensource.org/licenses/bsd-license.php">BSD style</license>
+ <license uri="https://xdebug.org/license/1.03" filesource="LICENSE">Xdebug-1.03</license>
  <notes>
 {$long_date} - Xdebug {$release_version}
 
@@ -137,12 +148,16 @@ function createVersion( $project_id, $release_version )
 }
 */
 
-function updateGIT()
+function updateGIT( bool $from_master )
 {
 	`git checkout master`;
 	`git pull origin master`;
-	`git checkout xdebug_3_2`;
-	`git pull origin xdebug_3_2`;
+
+	if ( !$from_master )
+	{
+		`git checkout xdebug_3_5`;
+		`git pull origin xdebug_3_5`;
+	}
 }
 
 function updateTemplateRC( $release_version )
@@ -202,7 +217,7 @@ function installPeclPackage( $release_version )
 
 function showGitCommands( $release_version )
 {
-	echo "git commit package.xml template.rc php_xdebug.h xdebug.ini RELEASE_PROCESS.rst -m \"Go with {$release_version}\"\n";
+	echo "git commit package.xml template.rc php_xdebug.h xdebug.ini composer.json RELEASE_PROCESS.rst -m \"Go with {$release_version}\"\n";
 	echo "~/bin/tag-sign.sh {$release_version}\n";
 	echo "git push origin {$release_version}\n";
 
@@ -255,7 +270,9 @@ $xml = <<<ENDXML
         '7.4' => [ 'src' => '3.1.6',       'win' => '3.1.6' ],
         '8.0' => [ 'src' => '{$release_version}',       'win' => '{$release_version}' ],
         '8.1' => [ 'src' => '{$release_version}',       'win' => '{$release_version}' ],
-        '8.2' => [ 'src' => '{$release_version}',       'win' => '{$release_version}' ]
+        '8.2' => [ 'src' => '{$release_version}',       'win' => '{$release_version}' ],
+        '8.3' => [ 'src' => '{$release_version}',       'win' => '{$release_version}' ],
+        '8.4' => [ 'src' => '{$release_version}',       'win' => '{$release_version}' ],
     ];
 
 ENDXML;
@@ -300,7 +317,9 @@ The full list of changes can be found on the
 <p>
 The source code can be found on the
 <a href="https://xdebug.org/download#releases">downloads</a> page, and as
-usual, Xdebug is installable through PECL.
+usual, Xdebug is installable through <a href="https://pecl.php.net/">PECL</a> and <a
+href="https://github.com/php/pie">PIE</a>, and is also available as package
+for most Linux distributions.
 </p>
 
 <p>
@@ -315,11 +334,11 @@ This release also contains a contribution by: <i></i> — Thanks!
 -->
 ENDTXT;
 
-	file_put_contents( "{$xdebugOrgRepo}/data/news/{$date}.txt", $text );
+	file_put_contents( "{$xdebugOrgRepo}/data/news/{$date}.html", $text );
 
 	$cwd = getcwd();
 	chdir( $xdebugOrgRepo );
-	`git add data/news/{$date}.txt`;
+	`git add data/news/{$date}.html`;
 
 	chdir( $cwd );
 }
@@ -347,7 +366,13 @@ else
 	echo "OK\n";
 }
 
-updateGIT();
+$issues = getAllFixedIssuesForVersion( $r->id );
+if ( count( $issues) == 0 )
+{
+	die("There are no issues for version {$release_version}");
+}
+
+updateGIT( $from_master );
 updateTemplateRC( $release_version );
 updatePhpXdebugH( $release_version );
 rebuild();
@@ -358,8 +383,6 @@ echo "\nRun the following commands:\n\n";
 peclPackage();
 installPeclPackage( $release_version );
 showGitCommands( $release_version );
-
-$issues = getAllFixedIssuesForVersion( $r->id );
 
 writePackageXMLInclusion( $release_version, $issues );
 createUpdatesSection( $release_version, $issues );

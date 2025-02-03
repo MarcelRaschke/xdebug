@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -228,7 +228,10 @@ PHP_FUNCTION(xdebug_peak_memory_usage)
 
 PHP_FUNCTION(xdebug_time_index)
 {
-	MODE_MUST_BE(XDEBUG_MODE_DEVELOP, "develop");
+	if (!XDEBUG_MODE_IS((XDEBUG_MODE_DEVELOP))) {
+		php_error(E_WARNING, "Function must be enabled in php.ini by setting 'xdebug.mode' to 'develop'");
+		RETURN_DOUBLE(0.0);
+	}
 
 	RETURN_DOUBLE(XDEBUG_SECONDS_SINCE_START(xdebug_get_nanotime()));
 }
@@ -308,7 +311,7 @@ PHP_FUNCTION(xdebug_call_function)
 		RETURN_FALSE;
 	}
 
-	RETURN_STRING(fse->function.function);
+	RETURN_STR_COPY(fse->function.function);
 }
 /* }}} */
 

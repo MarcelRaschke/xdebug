@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2024 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -48,6 +48,9 @@
 #include "php_xdebug_arginfo.h"
 
 #include "base/base.h"
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+# include "base/ctrl_socket.h"
+#endif
 #include "base/filter.h"
 #include "coverage/code_coverage.h"
 #include "develop/monitor.h"
@@ -71,7 +74,9 @@ static zend_result xdebug_post_startup(void);
 
 int xdebug_include_or_eval_handler(zend_execute_data *execute_data);
 
+/* True globals */
 int zend_xdebug_initialised = 0;
+int xdebug_global_mode = 0;
 
 zend_module_entry xdebug_module_entry = {
 	STANDARD_MODULE_HEADER,
@@ -193,6 +198,20 @@ static PHP_INI_MH(OnUpdateChangedSetting)
 	return FAILURE;
 }
 
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+static PHP_INI_MH(OnUpdateCtrlSocket)
+{
+	if (!new_value) {
+		return FAILURE;
+	}
+
+	if (!xdebug_lib_set_control_socket_granularity(ZSTR_VAL(new_value))) {
+		return FAILURE;
+	}
+
+	return SUCCESS;
+}
+#endif
 
 #ifdef P_tmpdir
 # define XDEBUG_TEMP_DIR P_tmpdir
@@ -213,6 +232,24 @@ ZEND_INI_DISP(display_changed_setting)
 {
 	ZEND_PUTS("(setting renamed in Xdebug 3)");
 }
+
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+ZEND_INI_DISP(display_control_socket)
+{
+	switch (XINI_BASE(control_socket_granularity))
+	{
+		case XDEBUG_CONTROL_SOCKET_OFF:
+			ZEND_PUTS("off");
+			break;
+		case XDEBUG_CONTROL_SOCKET_DEFAULT:
+			php_printf("time: %ldms", XINI_BASE(control_socket_threshold_ms));
+			break;
+		case XDEBUG_CONTROL_SOCKET_TIME:
+			php_printf("time: %ldms", XINI_BASE(control_socket_threshold_ms));
+			break;
+	}
+}
+#endif
 
 #define XDEBUG_REMOVED_INI_ENTRY(n) PHP_INI_ENTRY_EX(("" # n), "This setting has been removed, see the upgrading guide at https://xdebug.org/docs/upgrade_guide#removed-" # n, PHP_INI_ALL, OnUpdateRemovedSetting, display_removed_setting)
 #define XDEBUG_CHANGED_INI_ENTRY(n) PHP_INI_ENTRY_EX(("" # n), "This setting has been changed, see the upgrading guide at https://xdebug.org/docs/upgrade_guide#changed-" # n, PHP_INI_ALL, OnUpdateChangedSetting, display_changed_setting)
@@ -275,6 +312,9 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("xdebug.trigger_value",      "",                      PHP_INI_SYSTEM|PHP_INI_PERDIR, OnUpdateString, settings.library.trigger_value,    zend_xdebug_globals, xdebug_globals)
 	STD_PHP_INI_ENTRY("xdebug.file_link_format",   "",                      PHP_INI_ALL,                   OnUpdateString, settings.library.file_link_format, zend_xdebug_globals, xdebug_globals)
 	STD_PHP_INI_ENTRY("xdebug.filename_format",    "",                      PHP_INI_ALL,                   OnUpdateString, settings.library.filename_format,  zend_xdebug_globals, xdebug_globals)
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+	PHP_INI_ENTRY_EX("xdebug.control_socket",      "default",               PHP_INI_ALL,                   OnUpdateCtrlSocket, display_control_socket)
+#endif
 
 	STD_PHP_INI_ENTRY("xdebug.log",       "",           PHP_INI_ALL, OnUpdateString, settings.library.log,       zend_xdebug_globals, xdebug_globals)
 	STD_PHP_INI_ENTRY("xdebug.log_level", XLOG_DEFAULT, PHP_INI_ALL, OnUpdateLong,   settings.library.log_level, zend_xdebug_globals, xdebug_globals)
@@ -285,7 +325,7 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("xdebug.var_display_max_depth",    "3",       PHP_INI_ALL,    OnUpdateLong,   settings.library.display_max_depth,    zend_xdebug_globals, xdebug_globals)
 
 	/* Base settings */
-	STD_PHP_INI_ENTRY("xdebug.max_nesting_level", "256",                PHP_INI_ALL,    OnUpdateLong,   settings.base.max_nesting_level, zend_xdebug_globals, xdebug_globals)
+	STD_PHP_INI_ENTRY("xdebug.max_nesting_level", "512",                PHP_INI_ALL,    OnUpdateLong,   settings.base.max_nesting_level, zend_xdebug_globals, xdebug_globals)
 
 	/* Develop settings */
 	STD_PHP_INI_ENTRY("xdebug.cli_color",         "0",                  PHP_INI_ALL,    OnUpdateLong,   settings.develop.cli_color,         zend_xdebug_globals, xdebug_globals)
@@ -336,12 +376,12 @@ PHP_INI_BEGIN()
 	STD_PHP_INI_ENTRY("xdebug.trace_format",      "0",                  PHP_INI_ALL,    OnUpdateLong,   settings.tracing.trace_format,      zend_xdebug_globals, xdebug_globals)
 	STD_PHP_INI_ENTRY("xdebug.trace_options",     "0",                  PHP_INI_ALL,    OnUpdateLong,   settings.tracing.trace_options,     zend_xdebug_globals, xdebug_globals)
 	STD_PHP_INI_BOOLEAN("xdebug.collect_assignments", "0",              PHP_INI_ALL,    OnUpdateBool,   settings.tracing.collect_assignments, zend_xdebug_globals, xdebug_globals)
+	STD_PHP_INI_BOOLEAN("xdebug.collect_params", "1",                   PHP_INI_ALL,    OnUpdateBool,   settings.tracing.collect_params,    zend_xdebug_globals, xdebug_globals)
 	STD_PHP_INI_BOOLEAN("xdebug.collect_return",  "0",                  PHP_INI_ALL,    OnUpdateBool,   settings.tracing.collect_return,    zend_xdebug_globals, xdebug_globals)
 
 	/* Removed/Changed settings */
 	XDEBUG_CHANGED_INI_ENTRY(xdebug.auto_trace)
 	XDEBUG_REMOVED_INI_ENTRY(xdebug.collect_includes)
-	XDEBUG_REMOVED_INI_ENTRY(xdebug.collect_params)
 	XDEBUG_REMOVED_INI_ENTRY(xdebug.collect_vars)
 	XDEBUG_CHANGED_INI_ENTRY(xdebug.coverage_enable)
 	XDEBUG_CHANGED_INI_ENTRY(xdebug.default_enable)
@@ -469,7 +509,7 @@ static void xdebug_env_config(void)
 			name = "xdebug.cloud_id";
 		} else
 		if (strcasecmp(envvar, "idekey") == 0) {
-			xdebug_debugger_reset_ide_key(envval);
+			name = "xdebug.idekey";
 		} else
 		if (strcasecmp(envvar, "output_dir") == 0) {
 			name = "xdebug.output_dir";
@@ -516,6 +556,10 @@ PHP_MINIT_FUNCTION(xdebug)
 	ZEND_INIT_MODULE_GLOBALS(xdebug, php_xdebug_init_globals, php_xdebug_shutdown_globals);
 	REGISTER_INI_ENTRIES();
 
+	xdebug_coverage_register_constants(INIT_FUNC_ARGS_PASSTHRU);
+	xdebug_filter_register_constants(INIT_FUNC_ARGS_PASSTHRU);
+	xdebug_tracing_register_constants(INIT_FUNC_ARGS_PASSTHRU);
+
 	/* Locking in mode as it currently is */
 	if (!xdebug_lib_set_mode(XG(settings.library.requested_mode))) {
 		xdebug_lib_set_mode("develop");
@@ -557,10 +601,6 @@ PHP_MINIT_FUNCTION(xdebug)
 	if (zend_xdebug_initialised == 0) {
 		zend_error(E_WARNING, "Xdebug MUST be loaded as a Zend extension");
 	}
-
-	xdebug_coverage_register_constants(INIT_FUNC_ARGS_PASSTHRU);
-	xdebug_filter_register_constants(INIT_FUNC_ARGS_PASSTHRU);
-	xdebug_tracing_register_constants(INIT_FUNC_ARGS_PASSTHRU);
 
 	return SUCCESS;
 }
@@ -615,6 +655,10 @@ PHP_RINIT_FUNCTION(xdebug)
 		return SUCCESS;
 	}
 
+	/* Get xdebug ini entries from the environment also,
+	   this can override the idekey if one is set */
+	xdebug_env_config();
+
 	xdebug_library_rinit();
 
 	if (XDEBUG_MODE_IS(XDEBUG_MODE_COVERAGE)) {
@@ -622,6 +666,10 @@ PHP_RINIT_FUNCTION(xdebug)
 	}
 	if (XDEBUG_MODE_IS(XDEBUG_MODE_STEP_DEBUG)) {
 		xdebug_debugger_rinit();
+
+		if (xdebug_debugger_bailout_if_no_exec_requested()) {
+			zend_bailout();
+		}
 	}
 	if (XDEBUG_MODE_IS(XDEBUG_MODE_DEVELOP)) {
 		xdebug_develop_rinit();
@@ -635,10 +683,6 @@ PHP_RINIT_FUNCTION(xdebug)
 	if (XDEBUG_MODE_IS(XDEBUG_MODE_TRACING)) {
 		xdebug_tracing_rinit();
 	}
-
-	/* Get xdebug ini entries from the environment also,
-	   this can override the idekey if one is set */
-	xdebug_env_config();
 
 	xdebug_init_auto_globals();
 
@@ -684,6 +728,9 @@ PHP_RSHUTDOWN_FUNCTION(xdebug)
 		return SUCCESS;
 	}
 
+	if (XDEBUG_MODE_IS(XDEBUG_MODE_DEVELOP)) {
+		xdebug_develop_rshutdown();
+	}
 	if (XDEBUG_MODE_IS(XDEBUG_MODE_GCSTATS)) {
 		xdebug_gcstats_rshutdown();
 	}
@@ -725,8 +772,17 @@ ZEND_DLEXPORT void xdebug_statement_call(zend_execute_data *frame)
 
 	lineno = EG(current_execute_data)->opline->lineno;
 
-	xdebug_coverage_count_line_if_active(op_array, op_array->filename, lineno);
-	xdebug_debugger_statement_call(op_array->filename, lineno);
+	if (XDEBUG_MODE_IS(XDEBUG_MODE_COVERAGE)) {
+		xdebug_coverage_count_line_if_active(op_array, op_array->filename, lineno);
+	}
+
+	if (XDEBUG_MODE_IS(XDEBUG_MODE_STEP_DEBUG)) {
+		xdebug_debugger_statement_call(op_array->filename, lineno);
+	}
+
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+	xdebug_control_socket_dispatch();
+#endif
 }
 
 ZEND_DLEXPORT int xdebug_zend_startup(zend_extension *extension)
@@ -742,7 +798,7 @@ ZEND_DLEXPORT int xdebug_zend_startup(zend_extension *extension)
 	return zend_startup_module(&xdebug_module_entry);
 }
 
-static int xdebug_post_startup(void)
+static zend_result xdebug_post_startup(void)
 {
 	if (xdebug_orig_post_startup_cb) {
 		int (*cb)(void) = xdebug_orig_post_startup_cb;

@@ -67,7 +67,8 @@ function xdebug_get_code_coverage(): array {}
 /* -----------------------------------------------------------------------*/
 
 /* Returns all collected error messages */
-function xdebug_get_collected_errors(bool $emptyList = false): array {}
+/** @return void */
+function xdebug_get_collected_errors(bool $emptyList = false) {}
 
 /* -----------------------------------------------------------------------*/
 
@@ -77,7 +78,7 @@ function xdebug_get_function_count(): int {}
 /* -----------------------------------------------------------------------*/
 
 /* Returns information about the stack */
-function xdebug_get_function_stack(): array {}
+function xdebug_get_function_stack(array $options = []): array {}
 
 /* -----------------------------------------------------------------------*/
 

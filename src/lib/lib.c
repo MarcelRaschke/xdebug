@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2024 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -26,7 +26,6 @@ extern ZEND_DECLARE_MODULE_GLOBALS(xdebug);
 void xdebug_init_library_globals(xdebug_library_globals_t *xg)
 {
 	xg->headers               = NULL;
-	xg->mode                  = 0xFFFFFFFF;
 	xg->mode_from_environment = 0;
 
 	xg->log_file             = 0;
@@ -94,6 +93,8 @@ void xdebug_library_rinit(void)
 
 	XG_LIB(dumped) = 0;
 	XG_LIB(do_collect_errors) = 0;
+
+	XG_LIB(trait_location_map) = xdebug_hash_alloc(256, (xdebug_hash_dtor_t) zend_string_release);
 }
 
 void xdebug_library_post_deactivate(void)
@@ -102,9 +103,11 @@ void xdebug_library_post_deactivate(void)
 	xdebug_llist_destroy(XG_LIB(headers), NULL);
 	XG_LIB(headers) = NULL;
 
+	xdebug_hash_destroy(XG_LIB(trait_location_map));
 
 	xdebug_close_log();
 	xdebug_str_free(XG_LIB(diagnosis_buffer));
+	XG_LIB(diagnosis_buffer) = NULL;
 }
 
 
@@ -123,31 +126,31 @@ void xdebug_disable_opcache_optimizer(void)
 static int xdebug_lib_set_mode_item(const char *mode, int len)
 {
 	if (strncmp(mode, "off", len) == 0) {
-		XG_LIB(mode) |= XDEBUG_MODE_OFF;
+		xdebug_global_mode |= XDEBUG_MODE_OFF;
 		return 1;
 	}
 	if (strncmp(mode, "develop", len) == 0) {
-		XG_LIB(mode) |= XDEBUG_MODE_DEVELOP;
+		xdebug_global_mode |= XDEBUG_MODE_DEVELOP;
 		return 1;
 	}
 	if (strncmp(mode, "coverage", len) == 0) {
-		XG_LIB(mode) |= XDEBUG_MODE_COVERAGE;
+		xdebug_global_mode |= XDEBUG_MODE_COVERAGE;
 		return 1;
 	}
 	if (strncmp(mode, "debug", len) == 0) {
-		XG_LIB(mode) |= XDEBUG_MODE_STEP_DEBUG;
+		xdebug_global_mode |= XDEBUG_MODE_STEP_DEBUG;
 		return 1;
 	}
 	if (strncmp(mode, "gcstats", len) == 0) {
-		XG_LIB(mode) |= XDEBUG_MODE_GCSTATS;
+		xdebug_global_mode |= XDEBUG_MODE_GCSTATS;
 		return 1;
 	}
 	if (strncmp(mode, "profile", len) == 0) {
-		XG_LIB(mode) |= XDEBUG_MODE_PROFILING;
+		xdebug_global_mode |= XDEBUG_MODE_PROFILING;
 		return 1;
 	}
 	if (strncmp(mode, "trace", len) == 0) {
-		XG_LIB(mode) |= XDEBUG_MODE_TRACING;
+		xdebug_global_mode |= XDEBUG_MODE_TRACING;
 		return 1;
 	}
 
@@ -160,7 +163,7 @@ static int xdebug_lib_set_mode_from_setting(const char *mode)
 	char       *comma    = NULL;
 	int         errors   = 0;
 
-	XG_LIB(mode) = 0;
+	xdebug_global_mode = 0;
 
 	comma = strchr(mode_ptr, ',');
 	while (comma) {
@@ -202,6 +205,30 @@ int xdebug_lib_set_mode(const char *mode)
 
 	return result;
 }
+
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+int xdebug_lib_set_control_socket_granularity(char *value)
+{
+	if (strcmp(value, "no") == 0 || value[0] == '\0') {
+		XINI_BASE(control_socket_granularity) = XDEBUG_CONTROL_SOCKET_OFF;
+		return 1;
+	}
+
+	if (strcmp(value, "default") == 0) {
+		XINI_BASE(control_socket_granularity) = XDEBUG_CONTROL_SOCKET_DEFAULT;
+		XINI_BASE(control_socket_threshold_ms) = 25;
+		return 1;
+	}
+
+	if (strcmp(value, "time") == 0) {
+		XINI_BASE(control_socket_granularity) = XDEBUG_CONTROL_SOCKET_TIME;
+		XINI_BASE(control_socket_threshold_ms) = 25;
+		return 1;
+	}
+
+	return 0;
+}
+#endif
 
 int xdebug_lib_get_start_with_request(void)
 {
@@ -307,26 +334,61 @@ const char *xdebug_lib_mode_from_value(int mode)
 	}
 }
 
-static const char *find_in_globals(const char *element)
+const char *xdebug_lib_find_in_globals(const char *element, const char **found_in_global)
 {
 	zval *trigger_val = NULL;
 	const char *env_value = getenv(element);
+	zval *st;
 
+	/* Elements in Superglobal Symbols */
+	st = zend_hash_str_find_deref(&EG(symbol_table), "_GET", strlen("_GET"));
+	if (st && (trigger_val = zend_hash_str_find_deref(Z_ARRVAL_P(st), element, strlen(element))) != NULL) {
+		*found_in_global = "GET";
+		return Z_STRVAL_P(trigger_val);
+	}
+
+	st = zend_hash_str_find_deref(&EG(symbol_table), "_POST", strlen("_POST"));
+	if (st && (trigger_val = zend_hash_str_find_deref(Z_ARRVAL_P(st), element, strlen(element))) != NULL) {
+		*found_in_global = "POST";
+		return Z_STRVAL_P(trigger_val);
+	}
+
+	st = zend_hash_str_find_deref(&EG(symbol_table), "_COOKIE", strlen("_COOKIE"));
+	if (st && (trigger_val = zend_hash_str_find_deref(Z_ARRVAL_P(st), element, strlen(element))) != NULL) {
+		*found_in_global = "COOKIE";
+		return Z_STRVAL_P(trigger_val);
+	}
+
+	/* Actual Superglobals */
+	if ((trigger_val = zend_hash_str_find_deref(Z_ARR(PG(http_globals)[TRACK_VARS_GET]), element, strlen(element))) != NULL) {
+		*found_in_global = "GET";
+		return Z_STRVAL_P(trigger_val);
+	}
+
+	if ((trigger_val = zend_hash_str_find_deref(Z_ARR(PG(http_globals)[TRACK_VARS_POST]), element, strlen(element))) != NULL) {
+		*found_in_global = "POST";
+		return Z_STRVAL_P(trigger_val);
+	}
+
+	if ((trigger_val = zend_hash_str_find_deref(Z_ARR(PG(http_globals)[TRACK_VARS_COOKIE]), element, strlen(element))) != NULL) {
+		*found_in_global = "COOKIE";
+		return Z_STRVAL_P(trigger_val);
+	}
+
+	/* Environment. This goes last. */
 	if (env_value) {
+		*found_in_global = "ENV";
 		return env_value;
 	}
 
-	if (
-		(
-			(trigger_val = zend_hash_str_find(Z_ARR(PG(http_globals)[TRACK_VARS_ENV]), element, strlen(element))) != NULL
-		) || (
-			(trigger_val = zend_hash_str_find(Z_ARR(PG(http_globals)[TRACK_VARS_GET]), element, strlen(element))) != NULL
-		) || (
-			(trigger_val = zend_hash_str_find(Z_ARR(PG(http_globals)[TRACK_VARS_POST]), element, strlen(element))) != NULL
-		) || (
-			(trigger_val = zend_hash_str_find(Z_ARR(PG(http_globals)[TRACK_VARS_COOKIE]), element, strlen(element))) != NULL
-		)
-	) {
+	st = zend_hash_str_find_deref(&EG(symbol_table), "_ENV", strlen("_ENV"));
+	if (st && (trigger_val = zend_hash_str_find_deref(Z_ARRVAL_P(st), element, strlen(element))) != NULL) {
+		*found_in_global = "ENV";
+		return Z_STRVAL_P(trigger_val);
+	}
+
+	if ((trigger_val = zend_hash_str_find_deref(Z_ARR(PG(http_globals)[TRACK_VARS_ENV]), element, strlen(element))) != NULL) {
+		*found_in_global = "ENV";
 		return Z_STRVAL_P(trigger_val);
 	}
 
@@ -413,11 +475,12 @@ static int trigger_enabled(int for_mode, char **found_trigger_value)
 {
 	const char *trigger_value = NULL;
 	const char *trigger_name = "XDEBUG_TRIGGER";
+	const char *found_in_global;
 
 	xdebug_log(XLOG_CHAN_CONFIG, XLOG_DEBUG, "Checking if trigger 'XDEBUG_TRIGGER' is enabled for mode '%s'", xdebug_lib_mode_from_value(for_mode));
 
 	/* First we check for the generic 'XDEBUG_TRIGGER' option */
-	trigger_value = find_in_globals(trigger_name);
+	trigger_value = xdebug_lib_find_in_globals(trigger_name, &found_in_global);
 
 	/* If not found, we fall back to the per-mode name for backwards compatibility reasons */
 	if (!trigger_value) {
@@ -431,7 +494,7 @@ static int trigger_enabled(int for_mode, char **found_trigger_value)
 
 		if (trigger_name) {
 			xdebug_log(XLOG_CHAN_CONFIG, XLOG_INFO, "Trigger value for 'XDEBUG_TRIGGER' not found, falling back to '%s'", trigger_name);
-			trigger_value = find_in_globals(trigger_name);
+			trigger_value = xdebug_lib_find_in_globals(trigger_name, &found_in_global);
 		}
 	}
 
@@ -704,41 +767,91 @@ void xdebug_llist_string_dtor(void *dummy, void *elem)
 	}
 }
 
-char* xdebug_wrap_location_around_function_name(const char *prefix, zend_op_array *opa, char *fname)
+zend_string *xdebug_get_trait_scope(const char *function)
 {
-	return xdebug_sprintf(
-		"%s{%s:%s:%d-%d}",
-		fname,
-		prefix,
-		opa->filename->val,
-		opa->line_start,
-		opa->line_end
-	);
-}
+	zend_string *trait_scope;
 
-char* xdebug_wrap_closure_location_around_function_name(zend_op_array *opa, char *fname)
-{
-	xdebug_str tmp = XDEBUG_STR_INITIALIZER;
-	char *tmp_loc_info;
-
-	if (fname[strlen(fname) - 1] != '}') {
-		xdebug_str_add(&tmp, fname, 0);
-
-		return tmp.d;
+	if (
+		function[0] != '{' &&
+		function[strlen(function)-1] == '}' &&
+		xdebug_hash_find(XG_LIB(trait_location_map), function, strlen(function), (void *) &trait_scope)
+	) {
+		return trait_scope;
 	}
 
-	xdebug_str_addl(&tmp, fname, strlen(fname) - 1, 0);
+	return NULL;
+}
 
-	tmp_loc_info = xdebug_sprintf(
-		":%s:%d-%d}",
-		opa->filename->val,
+zend_string *xdebug_wrap_location_around_function_name(const char *prefix, zend_op_array *opa, zend_string *fname)
+{
+	void *dummy;
+
+	zend_string *wrapped = zend_strpprintf(
+		0,
+		"%s{%s:%s:%d-%d}",
+		ZSTR_VAL(fname),
+		prefix,
+		ZSTR_VAL(opa->filename),
 		opa->line_start,
 		opa->line_end
 	);
-	xdebug_str_add(&tmp, tmp_loc_info, 1);
 
-	return tmp.d;
+	if (!xdebug_hash_find(XG_LIB(trait_location_map), ZSTR_VAL(wrapped), ZSTR_LEN(wrapped), &dummy)) {
+		xdebug_hash_add(XG_LIB(trait_location_map), ZSTR_VAL(wrapped), ZSTR_LEN(wrapped), zend_string_copy(opa->scope->name));
+	}
+
+	return wrapped;
 }
+
+#if PHP_VERSION_ID >= 80400
+zend_string* xdebug_wrap_closure_location_around_function_name(zend_op_array *opa, zend_string *fname)
+{
+	zend_string *tmp, *tmp_loc_info;
+
+	if (ZSTR_VAL(fname)[ZSTR_LEN(fname) - 1] != '}') {
+		return zend_string_copy(fname);
+	}
+
+	tmp = zend_string_init(ZSTR_VAL(fname), strlen("{closure"), false);
+
+	tmp_loc_info = zend_strpprintf(
+		0,
+		"%s:%s:%d-%d}",
+		ZSTR_VAL(tmp),
+		ZSTR_VAL(opa->filename),
+		opa->line_start,
+		opa->line_end
+	);
+
+	zend_string_release(tmp);
+
+	return tmp_loc_info;
+}
+#else
+zend_string* xdebug_wrap_closure_location_around_function_name(zend_op_array *opa, zend_string *fname)
+{
+	zend_string *tmp, *tmp_loc_info;
+
+	if (ZSTR_VAL(fname)[ZSTR_LEN(fname) - 1] != '}') {
+		return zend_string_copy(fname);
+	}
+
+	tmp = zend_string_init(ZSTR_VAL(fname), ZSTR_LEN(fname) - 1, false);
+
+	tmp_loc_info = zend_strpprintf(
+		0,
+		"%s:%s:%d-%d}",
+		ZSTR_VAL(tmp),
+		ZSTR_VAL(opa->filename),
+		opa->line_start,
+		opa->line_end
+	);
+
+	zend_string_release(tmp);
+
+	return tmp_loc_info;
+}
+#endif
 
 static void xdebug_declared_var_dtor(void *dummy, void *elem)
 {
@@ -747,21 +860,23 @@ static void xdebug_declared_var_dtor(void *dummy, void *elem)
 	xdebug_str_free(s);
 }
 
-void xdebug_lib_register_compiled_variables(function_stack_entry *fse, zend_op_array *op_array)
+void xdebug_lib_register_compiled_variables(function_stack_entry *fse)
 {
 	unsigned int i = 0;
 
-	if (!fse->declared_vars) {
-		fse->declared_vars = xdebug_llist_alloc(xdebug_declared_var_dtor);
-	}
-
-	if (!op_array->vars) {
+	if (fse->declared_vars) {
 		return;
 	}
 
+	if (!fse->op_array->vars) {
+		return;
+	}
+
+	fse->declared_vars = xdebug_llist_alloc(xdebug_declared_var_dtor);
+
 	/* gather used variables from compiled vars information */
-	while (i < (unsigned int) op_array->last_var) {
-		xdebug_llist_insert_next(fse->declared_vars, XDEBUG_LLIST_TAIL(fse->declared_vars), xdebug_str_create(STR_NAME_VAL(op_array->vars[i]), STR_NAME_LEN(op_array->vars[i])));
+	while (i < (unsigned int) fse->op_array->last_var) {
+		xdebug_llist_insert_next(fse->declared_vars, XDEBUG_LLIST_TAIL(fse->declared_vars), xdebug_str_create(STR_NAME_VAL(fse->op_array->vars[i]), STR_NAME_LEN(fse->op_array->vars[i])));
 		i++;
 	}
 }

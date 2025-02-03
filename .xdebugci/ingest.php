@@ -1,8 +1,10 @@
 <?php
 $m = new \MongoDB\Driver\Manager( "mongodb+srv://ci-writer:{$_ENV['CIWRITEPASSWORD']}@xdebugci-qftmo.mongodb.net/test?retryWrites=true" );
+$userid = posix_geteuid();
+$tmp_dir = "/tmp/ptester-{$userid}";
 
 /* Create RUN ID */
-$runId =     trim( file_get_contents( '/tmp/ptester/run-id.txt' ) );
+$runId =     trim( file_get_contents( "{$tmp_dir}/run-id.txt" ) );
 $timeStamp = time();
 $abbrev =    trim( `git describe --tags` );
 
@@ -16,7 +18,7 @@ else
 }
 
 /* Read all JUNIT logs */
-foreach ( glob( '/tmp/ptester/junit/' . $pattern ) as $file )
+foreach ( glob( "{$tmp_dir}/junit/{$pattern}" ) as $file )
 {
 	preg_match( '@junit/((.*?)(-32bit)?(-zts)?)\.xml@', $file, $matches );
 
@@ -30,6 +32,7 @@ foreach ( glob( '/tmp/ptester/junit/' . $pattern ) as $file )
 	$status = [
 		'run' => $runId,
 		'ts' => $timeStamp,
+		'ts_exp' => new \MongoDB\BSON\Timestamp(0, time()),
 		'ref' => trim( `git rev-parse --short --verify HEAD` ),
 		'abbrev' => $abbrev,
 		'cfg' => [
@@ -68,7 +71,7 @@ foreach ( glob( '/tmp/ptester/junit/' . $pattern ) as $file )
 			{
 				if ( isset ( $testcase->failure['type'] ) )
 				{
-					preg_match( "@PHP\.tests\.(.*)\.phpt@", (string) $testcase['classname'], $matches );
+					preg_match( "@tests.(.*)\.phpt@", (string) $testcase['name'], $matches );
 					$status['failures'][] = [
 						'file' => $matches[1],
 						'desc' => (string) $testcase['name'],

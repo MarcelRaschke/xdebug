@@ -14,6 +14,7 @@
    +----------------------------------------------------------------------+
  */
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -40,7 +41,11 @@
 #include "usefulstuff.h"
 #include "log.h"
 
-#include "ext/standard/php_lcg.h"
+#if PHP_VERSION_ID >= 80200
+# include "ext/random/php_random.h"
+#else
+# include "ext/standard/php_lcg.h"
+#endif
 #include "ext/standard/flock_compat.h"
 #include "main/php_ini.h"
 
@@ -312,8 +317,8 @@ char *xdebug_path_to_url(zend_string *fileurl)
 	/* encode the url */
 	encoded_fileurl = xdebug_raw_url_encode(ZSTR_VAL(fileurl), ZSTR_LEN(fileurl), &new_len, 1);
 
-	if (strncmp(ZSTR_VAL(fileurl), "phar://", 7) == 0) {
-		/* ignore, phar is cool */
+	if (strstr(ZSTR_VAL(fileurl), "://") != NULL && strstr(ZSTR_VAL(fileurl), "://") < strstr(ZSTR_VAL(fileurl), "/")) {
+		/* ignore, some form of stream wrapper scheme */
 		tmp = xdstrdup(ZSTR_VAL(fileurl));
 	} else if (ZSTR_VAL(fileurl)[0] != '/' && ZSTR_VAL(fileurl)[0] != '\\' && ZSTR_VAL(fileurl)[1] != ':') {
 		/* convert relative paths */
@@ -495,7 +500,7 @@ FILE *xdebug_fopen(char *fname, const char *mode, const char *extension, char **
 int xdebug_format_output_filename(char **filename, char *format, char *script_name)
 {
 	xdebug_str fname = XDEBUG_STR_INITIALIZER;
-	char       cwd[128];
+	char       cwd[MAXPATHLEN];
 
 	while (*format)
 	{
@@ -506,7 +511,7 @@ int xdebug_format_output_filename(char **filename, char *format, char *script_na
 			switch (*format)
 			{
 				case 'c': /* crc32 of the current working directory */
-					if (VCWD_GETCWD(cwd, 127)) {
+					if (VCWD_GETCWD(cwd, MAXPATHLEN - 1)) {
 						xdebug_str_add_fmt(&fname, "%lu", xdebug_crc32(cwd, strlen(cwd)));
 					}
 					break;

@@ -7,6 +7,7 @@ xdebug.dump_globals=0
 xdebug.collect_return=0
 xdebug.collect_assignments=0
 xdebug.force_error_reporting=0
+xdebug.var_display_max_data=256
 log_errors=1
 error_log=
 display_errors=0
@@ -37,7 +38,11 @@ foo( true );
 %sxdebug_get_function_stack_local_vars.php:4:
 array(1) {
   [0] =>
-  array(4) {
+  array(6) {
+    'time' =>
+    double(%f)
+    'memory' =>
+    int(%d)
     'function' =>
     string(24) "custom_exception_handler"
     'file' =>

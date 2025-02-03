@@ -4,7 +4,7 @@ Contributing
 Xdebug is hosted on Github. The source code can be browsed there and can be
 checked out with::
 
-  git clone git://github.com/xdebug/xdebug.git
+  git clone https://github.com/xdebug/xdebug.git
 
 If you think you want to fix a bug or work on a new feature, then you need to
 follow the instructions below. Please reach out first to discuss your
@@ -26,12 +26,12 @@ Initial Set-up
 
 - Add the original repository as ``upstream`` remote::
 
-    git remote add upstream git://github.com/xdebug/xdebug.git
+    git remote add upstream https://github.com/xdebug/xdebug.git
     git fetch upstream
 
-- Add a tracking branch for Xdebug 3.1::
+- Add a tracking branch for Xdebug 3.4::
 
-    git checkout --track origin/xdebug_3_1
+    git checkout --track origin/xdebug_3_4
 
 Branches
 --------
@@ -40,18 +40,18 @@ There are two branches in operation:
 
 ``master``
     This is were all new feature Pull Requests should be targeted at
-``xdebug_3_1``
+``xdebug_3_4``
     This is were all bug fix Pull Requests should be targeted at. The
     maintainer will add them to ``master`` too when merging the Pull Request.
 
 Working on a Pull Request
 -------------------------
 
-- Make sure that your ``master`` and ``xdebug_3_1`` branches are up to date
+- Make sure that your ``master`` and ``xdebug_3_4`` branches are up to date
   with the ``upstream`` repository.
 - Create an issue in the `issue tracker <https://bugs.xdebug.org>`_ (if none
   exists yet).
-- Switch to the right target branch (``master`` for features, ``xdebug_3_1``
+- Switch to the right target branch (``master`` for features, ``xdebug_3_4``
   for bug fixes).
 - Create a feature branch::
 
@@ -89,7 +89,7 @@ Working on a Pull Request
   will be targeting, for example to rebase against the current bug fix
   branch::
 
-    git fetch upstream && git rebase upstream/xdebug_3_1
+    git fetch upstream && git rebase upstream/xdebug_3_4
 
 - Push your changes to your remote repository::
 

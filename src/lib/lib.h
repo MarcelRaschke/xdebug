@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2021 Derick Rethans                               |
+   | Copyright (c) 2002-2024 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,6 +24,8 @@
 #include "zend.h"
 #include "zend_API.h"
 #include "compat.h"
+
+extern int xdebug_global_mode;
 
 typedef struct xdebug_var_name {
 	zend_string *name;
@@ -65,10 +67,12 @@ typedef struct xdebug_var_name {
 
 #define XDEBUG_MAX_FUNCTION_LEN 1024
 
-#define XDEBUG_TRACE_OPTION_APPEND         1
-#define XDEBUG_TRACE_OPTION_COMPUTERIZED   2
-#define XDEBUG_TRACE_OPTION_HTML           4
-#define XDEBUG_TRACE_OPTION_NAKED_FILENAME 8
+#define XDEBUG_TRACE_OPTION_APPEND          0x01
+#define XDEBUG_TRACE_OPTION_COMPUTERIZED    0x02
+#define XDEBUG_TRACE_OPTION_HTML            0x04
+#define XDEBUG_TRACE_OPTION_NAKED_FILENAME  0x08
+#define XDEBUG_TRACE_OPTION_FLAMEGRAPH_COST 0x10
+#define XDEBUG_TRACE_OPTION_FLAMEGRAPH_MEM  0x20
 
 #define XDEBUG_CC_OPTION_UNUSED          1
 #define XDEBUG_CC_OPTION_DEAD_CODE       2
@@ -91,38 +95,11 @@ typedef struct xdebug_var_name {
 #define XDEBUG_CMDLOOP_NONBAIL                       0
 #define XDEBUG_CMDLOOP_BAIL                          1
 
-#define XDEBUG_ERROR_OK                              0
-#define XDEBUG_ERROR_PARSE                           1
-#define XDEBUG_ERROR_DUP_ARG                         2
-#define XDEBUG_ERROR_INVALID_ARGS                    3
-#define XDEBUG_ERROR_UNIMPLEMENTED                   4
-#define XDEBUG_ERROR_COMMAND_UNAVAILABLE             5
-
-#define XDEBUG_ERROR_CANT_OPEN_FILE                100
-#define XDEBUG_ERROR_STREAM_REDIRECT_FAILED        101 /* unused */
-
-#define XDEBUG_ERROR_BREAKPOINT_NOT_SET            200
-#define XDEBUG_ERROR_BREAKPOINT_TYPE_NOT_SUPPORTED 201
-#define XDEBUG_ERROR_BREAKPOINT_INVALID            202
-#define XDEBUG_ERROR_BREAKPOINT_NO_CODE            203
-#define XDEBUG_ERROR_BREAKPOINT_INVALID_STATE      204
-#define XDEBUG_ERROR_NO_SUCH_BREAKPOINT            205
-#define XDEBUG_ERROR_EVALUATING_CODE               206
-#define XDEBUG_ERROR_INVALID_EXPRESSION            207 /* unused */
-
-#define XDEBUG_ERROR_PROPERTY_NON_EXISTENT         300
-#define XDEBUG_ERROR_PROPERTY_NON_EXISTANT         300 /* compatibility typo */
-#define XDEBUG_ERROR_STACK_DEPTH_INVALID           301
-#define XDEBUG_ERROR_CONTEXT_INVALID               302 /* unused */
-
-#define XDEBUG_ERROR_PROFILING_NOT_STARTED         800
-
-#define XDEBUG_ERROR_ENCODING_NOT_SUPPORTED        900
-
 typedef struct _xdebug_func {
 	zend_string *object_class;
 	zend_string *scope_class;
-	char *function;
+	zend_string *function;
+	zend_string *include_filename;
 	int   type;
 	int   internal;
 } xdebug_func;
@@ -150,33 +127,47 @@ typedef struct _function_stack_entry {
 	HashTable         *symbol_table;
 	zend_execute_data *execute_data;
 	unsigned char      is_variadic;
+	unsigned char      is_trampoline;
 	unsigned char      arg_done;
+
+	/* debugging properties */
+	bool has_line_breakpoints;
 
 	/* filter properties */
 	unsigned char filtered_code_coverage;
 	unsigned char filtered_stack;
 	unsigned char filtered_tracing;
 
+	/* coverage properties */
+	bool         code_coverage_init;
+	char        *code_coverage_function_name;
+	zend_string *code_coverage_filename;
+
 	/* location properties */
 	int          lineno;
 	zend_string *filename;
-	zend_string *include_filename;
 
 	/* tracing properties */
 	signed long  memory;
 	signed long  prev_memory;
 	uint64_t     nanotime;
+	bool         function_call_traced;
 
 	/* profiling properties */
 	xdebug_profile profile;
 	struct {
 		int          lineno;
 		zend_string *filename;
-		char        *funcname;
+		zend_string *function;
 	} profiler;
 
 	/* misc properties */
 	zend_op_array *op_array;
+#if PHP_VERSION_ID >= 80100
+	void           (*soap_error_cb)(int type, zend_string *error_filename, const uint32_t error_lineno, zend_string *message);
+#else
+	void           (*soap_error_cb)(int type, const char *error_filename, const uint32_t error_lineno, zend_string *message);
+#endif
 } function_stack_entry;
 
 function_stack_entry *xdebug_get_stack_frame(int nr);
@@ -194,7 +185,6 @@ struct _xdebug_multi_opcode_handler_t
 };
 
 typedef struct _xdebug_library_globals_t {
-	int                    mode;
 	int                    start_with_request; /* One of the XDEBUG_START_WITH_REQUEST_* constants */
 	int                    start_upon_error;   /* One of the XDEBUG_START_UPON_ERROR_* constants */
 	int                    mode_from_environment; /* Keeps track whether the mode was set with XDEBUG_MODE for diagnostics purposes */
@@ -217,6 +207,10 @@ typedef struct _xdebug_library_globals_t {
 	char         *log_open_timestring;
 	xdebug_str   *diagnosis_buffer;
 
+	/* Trait location map */
+	xdebug_hash  *trait_location_map;
+
+	/* Opcode overrite handlers */
 	user_opcode_handler_t          original_opcode_handlers[256];
 	xdebug_multi_opcode_handler_t *opcode_multi_handlers[256];
 	xdebug_set                    *opcode_handlers_set;
@@ -265,8 +259,8 @@ void xdebug_disable_opcache_optimizer(void);
 #define XDEBUG_MODE_TRACING      1<<5
 int xdebug_lib_set_mode(const char *mode);
 
-#define XDEBUG_MODE_IS_OFF() ((XG(globals.library.mode) == XDEBUG_MODE_OFF))
-#define XDEBUG_MODE_IS(v) ((XG(globals.library.mode) & (v)) ? 1 : 0)
+#define XDEBUG_MODE_IS_OFF() ((xdebug_global_mode == XDEBUG_MODE_OFF))
+#define XDEBUG_MODE_IS(v) ((xdebug_global_mode & (v)) ? 1 : 0)
 #define RETURN_IF_MODE_IS_NOT(m) if (!XDEBUG_MODE_IS((m))) { return; }
 #define RETURN_FALSE_IF_MODE_IS_NOT(m) if (!XDEBUG_MODE_IS((m))) { RETURN_FALSE; }
 #define WARN_AND_RETURN_IF_MODE_IS_NOT(m) if (!XDEBUG_MODE_IS((m))) { php_error(E_NOTICE, "Functionality is not enabled"); return; }
@@ -283,12 +277,21 @@ int xdebug_lib_never_start_with_request(void);
 int xdebug_lib_get_start_with_request(void);
 int xdebug_lib_has_shared_secret(void);
 
+const char *xdebug_lib_find_in_globals(const char *element, const char **found_in_global);
+
 #define XDEBUG_START_UPON_ERROR_DEFAULT     1
 #define XDEBUG_START_UPON_ERROR_YES         2
 #define XDEBUG_START_UPON_ERROR_NO          3
 int xdebug_lib_set_start_upon_error(char *value);
 int xdebug_lib_start_upon_error(void);
 int xdebug_lib_get_start_upon_error(void);
+
+#if HAVE_XDEBUG_CONTROL_SOCKET_SUPPORT
+# define XDEBUG_CONTROL_SOCKET_OFF        1
+# define XDEBUG_CONTROL_SOCKET_DEFAULT    2
+# define XDEBUG_CONTROL_SOCKET_TIME       3
+int xdebug_lib_set_control_socket_granularity(char *value);
+#endif
 
 const char *xdebug_lib_mode_from_value(int mode);
 
@@ -317,8 +320,10 @@ int xdebug_call_original_opcode_handler_if_set(int opcode, XDEBUG_OPCODE_HANDLER
 char *xdebug_lib_get_output_dir(void);
 
 void xdebug_llist_string_dtor(void *dummy, void *elem);
-char* xdebug_wrap_location_around_function_name(const char *prefix, zend_op_array *opa, char *fname);
-char* xdebug_wrap_closure_location_around_function_name(zend_op_array *opa, char *fname);
 
-void xdebug_lib_register_compiled_variables(function_stack_entry *fse, zend_op_array *op_array);
+zend_string *xdebug_get_trait_scope(const char *function);
+zend_string* xdebug_wrap_location_around_function_name(const char *prefix, zend_op_array *opa, zend_string *fname);
+zend_string* xdebug_wrap_closure_location_around_function_name(zend_op_array *opa, zend_string *fname);
+
+void xdebug_lib_register_compiled_variables(function_stack_entry *fse);
 #endif

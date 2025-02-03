@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -23,6 +23,9 @@
 
 ZEND_EXTERN_MODULE_GLOBALS(xdebug)
 
+/* True global for overloaded var_dump */
+zif_handler orig_var_dump_func;
+
 static int xdebug_silence_handler(XDEBUG_OPCODE_HANDLER_ARGS);
 
 static void xdebug_develop_overloaded_functions_setup(void)
@@ -30,17 +33,9 @@ static void xdebug_develop_overloaded_functions_setup(void)
 	zend_function *orig;
 
 	/* Override var_dump with our own function */
-	orig = zend_hash_str_find_ptr(EG(function_table), "var_dump", sizeof("var_dump") - 1);
-	XG_DEV(orig_var_dump_func) = orig->internal_function.handler;
+	orig = zend_hash_str_find_ptr(CG(function_table), "var_dump", sizeof("var_dump") - 1);
+	orig_var_dump_func = orig->internal_function.handler;
 	orig->internal_function.handler = zif_xdebug_var_dump;
-}
-
-static void xdebug_develop_overloaded_functions_restore(void)
-{
-	zend_function *orig;
-
-	orig = zend_hash_str_find_ptr(EG(function_table), "var_dump", sizeof("var_dump") - 1);
-	orig->internal_function.handler = XG_DEV(orig_var_dump_func);
 }
 
 
@@ -79,6 +74,8 @@ void xdebug_develop_minit(INIT_FUNC_ARGS)
 	xdebug_set_opcode_handler(ZEND_END_SILENCE, xdebug_silence_handler);
 
 	REGISTER_LONG_CONSTANT("XDEBUG_STACK_NO_DESC", XDEBUG_STACK_NO_DESC, CONST_CS | CONST_PERSISTENT);
+
+	xdebug_develop_overloaded_functions_setup();
 }
 
 void xdebug_develop_mshutdown()
@@ -87,6 +84,8 @@ void xdebug_develop_mshutdown()
 
 void xdebug_develop_rinit()
 {
+	int i;
+
 	XG_DEV(collected_errors)  = xdebug_llist_alloc(xdebug_llist_string_dtor);
 
 	/* Function monitoring */
@@ -94,7 +93,26 @@ void xdebug_develop_rinit()
 	XG_DEV(functions_to_monitor) = NULL;
 	XG_DEV(monitored_functions_found) = xdebug_llist_alloc(xdebug_monitored_function_dtor);
 
-	xdebug_develop_overloaded_functions_setup();
+	/* Admin for last exception trace */
+	XG_DEV(last_exception_trace).next_slot = 0;
+	for (i = 0; i < XDEBUG_LAST_EXCEPTION_TRACE_SLOTS; i++) {
+		XG_DEV(last_exception_trace).obj_ptr[i] = NULL;
+		ZVAL_UNDEF(&XG_DEV(last_exception_trace).stack_trace[i]);
+	}
+}
+
+void xdebug_develop_rshutdown()
+{
+	int i;
+
+	/* Admin for last exception trace */
+	XG_DEV(last_exception_trace).next_slot = 0;
+	for (i = 0; i < XDEBUG_LAST_EXCEPTION_TRACE_SLOTS; i++) {
+		if (XG_DEV(last_exception_trace).obj_ptr[i]) {
+			XG_DEV(last_exception_trace).obj_ptr[i] = NULL;
+			zval_ptr_dtor(&XG_DEV(last_exception_trace).stack_trace[i]);
+		}
+	}
 }
 
 void xdebug_develop_post_deactivate()
@@ -109,8 +127,6 @@ void xdebug_develop_post_deactivate()
 		xdebug_hash_destroy(XG_DEV(functions_to_monitor));
 		XG_DEV(functions_to_monitor) = NULL;
 	}
-
-	xdebug_develop_overloaded_functions_restore();
 }
 
 

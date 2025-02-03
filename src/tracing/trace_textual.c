@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | Xdebug                                                               |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2002-2022 Derick Rethans                               |
+   | Copyright (c) 2002-2023 Derick Rethans                               |
    +----------------------------------------------------------------------+
    | This source file is subject to version 1.01 of the Xdebug license,   |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -164,7 +164,7 @@ static void add_arguments(xdebug_str *line_entry, function_stack_entry *fse)
 	}
 }
 
-void xdebug_trace_textual_function_entry(void *ctxt, function_stack_entry *fse, int function_nr)
+void xdebug_trace_textual_function_entry(void *ctxt, function_stack_entry *fse)
 {
 	xdebug_trace_textual_context *context = (xdebug_trace_textual_context*) ctxt;
 	unsigned int j = 0; /* Counter */
@@ -182,20 +182,22 @@ void xdebug_trace_textual_function_entry(void *ctxt, function_stack_entry *fse, 
 
 	xdfree(tmp_name);
 
-	add_arguments(&str, fse);
+	if (XINI_TRACE(collect_params)) {
+		add_arguments(&str, fse);
+	}
 
-	if (fse->include_filename) {
+	if (fse->function.include_filename) {
 		if (fse->function.type == XFUNC_EVAL) {
 			zend_string *escaped;
 
-			escaped = php_addcslashes(fse->include_filename, (char*) "'\\\0..\37", 6);
+			escaped = php_addcslashes(fse->function.include_filename, (char*) "'\\\0..\37", 6);
 
 			xdebug_str_addc(&str, '\'');
 			xdebug_str_add_zstr(&str, escaped);
 			xdebug_str_addc(&str, '\'');
 			zend_string_release(escaped);
 		} else {
-			xdebug_str_add_zstr(&str, fse->include_filename);
+			xdebug_str_add_zstr(&str, fse->function.include_filename);
 		}
 	}
 
@@ -222,7 +224,7 @@ static void xdebug_return_trace_stack_common(xdebug_str *str, function_stack_ent
 }
 
 
-void xdebug_trace_textual_function_return_value(void *ctxt, function_stack_entry *fse, int function_nr, zval *return_value)
+void xdebug_trace_textual_function_return_value(void *ctxt, function_stack_entry *fse, zval *return_value)
 {
 	xdebug_trace_textual_context *context = (xdebug_trace_textual_context*) ctxt;
 	xdebug_str                    str = XDEBUG_STR_INITIALIZER;
@@ -243,7 +245,7 @@ void xdebug_trace_textual_function_return_value(void *ctxt, function_stack_entry
 	xdebug_str_destroy(&str);
 }
 
-void xdebug_trace_textual_generator_return_value(void *ctxt, function_stack_entry *fse, int function_nr, zend_generator *generator)
+void xdebug_trace_textual_generator_return_value(void *ctxt, function_stack_entry *fse, zend_generator *generator)
 {
 	xdebug_trace_textual_context *context = (xdebug_trace_textual_context*) ctxt;
 	xdebug_str                    str = XDEBUG_STR_INITIALIZER;
@@ -268,6 +270,7 @@ void xdebug_trace_textual_generator_return_value(void *ctxt, function_stack_entr
 	xdebug_str_addc(&str, '(');
 	xdebug_str_add_str(&str, tmp_value);
 	xdebug_str_add_literal(&str, " => ");
+	xdebug_str_free(tmp_value);
 
 	tmp_value = xdebug_get_zval_value_line(&generator->value, 0, NULL);
 	if (tmp_value) {
